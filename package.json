@@ -1,0 +1,57 @@
+{
+  "name": "@local/serena-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run and supervise per-project Serena MCP instances for DSH, with an install/start/stop panel.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "serena",
+    "lsp",
+    "mcp"
+  ],
+  "license": "MIT",
+  "author": "PetterWong-L",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PetterWong-L/serena-manager.git"
+  },
+  "homepage": "https://github.com/PetterWong-L/serena-manager#readme",
+  "bugs": {
+    "url": "https://github.com/PetterWong-L/serena-manager/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node tests/host-smoke.mjs && node tests/panel-smoke.mjs",
+    "test:vm": "node --experimental-vm-modules tests/progress.mjs",
+    "test:ui": "node tests/ui-fixture.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

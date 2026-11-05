@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+*.log
+.serena/
+state.json
+HANDOFF.md
+artifacts/*.tmp.png

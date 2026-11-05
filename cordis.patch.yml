@@ -1,0 +1,6 @@
+# Portable bundle patch: no machine-specific paths belong here.
+# `storageDir` defaults to ~/.dsh/serena-manager; add a config block in the
+# profile patch only when a different location is required.
+- insert:
+    - id: serena-manager
+      name: '@local/serena-manager'
