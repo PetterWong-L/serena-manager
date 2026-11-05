@@ -38,6 +38,36 @@ In DSH these arrive as **three MCP tools** (Serena v2's `--agent-interface repl`
 
 The cost is real too: each running instance adds ~1.1k tokens of tool schema to context, which is why the panel is built around **one project at a time**.
 
+## Compared with CodeGraph
+
+The same need has a second route: **CodeGraph**. Instead of starting a language server, it parses the workspace with tree-sitter into a relation graph (definitions, calls, imports, inheritance) and lets the agent ask "who calls X", "what breaks if I change X", "can X reach Y".
+
+- In the DSH ecosystem the counterpart is [@meteor-system/dsh-codegraph](https://github.com/Meteor-system/dsh-codegraph): one plugin, one `codegraph_explore` tool, read-only, index cached in `<project>/.dsh/codegraph/`, off by default and enabled per project.
+- Further out there is the standalone engine [codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph): 38 languages, 42 MCP tools, vector search, a memory layer, VS Code / JetBrains plugins and PR impact analysis. That is a larger system, not the same small tool.
+
+These are not substitutes. They are two different trade-offs:
+
+| Dimension | This plugin (Serena / LSP) | CodeGraph (syntax graph) |
+| --- | --- | --- |
+| Mechanism | A real language server (sourcekit-lsp, pyright, tsserver, …); the type system takes part in resolution | tree-sitter extracts syntax facts into a graph; no type checking, no control flow |
+| Precision | Type-exact; renames and signature changes are trustworthy | Every edge carries `exact` / `inferred` / `heuristic`; cross-file resolution is by qualified-name matching; C/C++ macros are not expanded |
+| Questions it answers | Where is it defined, who references this symbol, file symbol overview, types and inheritance | Who calls X, what does changing X break (default depth 5), can X reach Y; the standalone engine also does entry points, circular deps and complexity |
+| Can it edit code | Yes: `replace_symbol_body` / `insert_after_symbol` edit by symbol through the language server | No, queries are read-only |
+| Indexing and startup | Language server boot + project index (seconds to tens of seconds), a long-lived process per project | First call scans the workspace (300s default budget, returns `indexing` when exceeded), then incremental refresh |
+| Context cost | 3 tools, ~1.1k tokens of schema, instance stays live | 1 tool, very small schema |
+| Prerequisites | uv + `serena-agent` + the matching language server (Swift needs Xcode / sourcekit-lsp) | Ships with the plugin; no language server or build environment |
+| Language coverage | Whatever Serena can drive (dozens of languages officially) | Whatever grammars the plugin ships; unsupported languages return `unsupported_language` |
+| Typical use | Refactoring, symbol-level edits, confirming the reference surface before a change | Getting oriented in an unfamiliar repo, call chains and impact analysis, reachability |
+
+**How to choose**
+
+- You are actively changing this repo and editing concrete symbols -> this plugin. A syntax graph can show the blast radius, but changing code correctly still needs the type system.
+- You only want a quick "who calls whom", do not want a language server, and the project does not even build -> CodeGraph.
+- In environments like iOS that need `xcode-select` / sourcekit-lsp: this plugin is more precise but heavier; CodeGraph works right after install, at the price of name-level precision.
+- Both can be installed, but running both at once is not recommended: overlapping tools make the agent pick between two ways of saying the same thing, and both consume context. Switching per task is cheaper.
+
+**Why LSP here instead of a home-grown graph**: the deliverable includes *editing code*. Replacing or inserting a symbol body without breaking types is something only a language server can guarantee; a syntax graph is good at answering relational questions, not at editing. That is why this plugin runs Serena instead of writing its own indexer.
+
 ## Screenshots
 
 | Light | Dark |

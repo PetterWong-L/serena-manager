@@ -38,6 +38,36 @@
 
 代价也要说清楚：每个运行中的实例会给上下文增加约 1.1k tokens 的工具 schema，所以面板围绕"**同一时间一个项目**"设计。
 
+## 和 CodeGraph 的对比
+
+同一个需求还有另一条路：**CodeGraph**。它不启动语言服务器，而是用 tree-sitter 把工作区抽成一张关系图（定义、调用、导入、继承），再让 agent 查"谁调用 X""改 X 波及谁""X 能不能到达 Y"。
+
+- DSH 生态里的对应实现是 [@meteor-system/dsh-codegraph](https://github.com/Meteor-system/dsh-codegraph)：一个插件、一个 `codegraph_explore` 工具、只读，索引缓存在 `<项目>/.dsh/codegraph/`；默认关闭，按项目启用。
+- 再往外还有独立引擎 [codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph)：38 种语言、42 个 MCP 工具、向量检索、记忆层、VS Code / JetBrains 插件、PR 影响面分析。那是更大的系统，不是同类小工具。
+
+两者不是替代关系，是两种取舍：
+
+| 维度 | 本插件（Serena / LSP） | CodeGraph（语法图） |
+| --- | --- | --- |
+| 底层机制 | 真实语言服务器（sourcekit-lsp、pyright、tsserver…），类型系统参与解析 | tree-sitter 抽语法事实建图，无类型检查、无控制流 |
+| 精度 | 类型精确，重命名/改签名可信 | 每条边带置信度 `exact` / `inferred` / `heuristic`，跨文件靠限定名匹配，C/C++ 宏不展开 |
+| 能回答什么 | 定义在哪、谁引用了这个符号、文件符号概览、类型与继承 | 谁调用 X、改 X 波及谁（默认深度 5）、X 能否到达 Y；独立引擎另外有入口点、循环依赖、复杂度 |
+| 能不能改代码 | 能：`replace_symbol_body` / `insert_after_symbol` 按符号改，走语言服务器 | 不能，查询只读 |
+| 索引与启动 | 语言服务器启动 + 项目索引（数秒到数十秒），按项目常驻进程 | 首次调用扫描工作区建图（默认超时 300s，超时返回 `indexing`），之后增量刷新 |
+| 上下文成本 | 3 个工具，约 1.1k tokens schema，实例常驻 | 1 个工具，schema 很小 |
+| 依赖 | uv + `serena-agent` + 对应语言服务器（Swift 需要 Xcode / sourcekit-lsp） | 插件自带，不需要语言服务器和编译环境 |
+| 语言覆盖 | 取决于 Serena 能驱动的语言服务器（官方覆盖数十种语言） | 取决于插件打包的 grammar，不支持的语言返回 `unsupported_language` |
+| 典型场景 | 重构、按符号改代码、改前确认引用面 | 陌生仓库摸底、调用链与影响面、可达性排查 |
+
+**怎么选**
+
+- 正在改这个仓库、要动具体符号 → 本插件。语法图能告诉你影响面，但真要改对，还得靠类型系统。
+- 只是想快速搞清"谁调谁"、不想装语言服务器、仓库还编译不过 → CodeGraph。
+- iOS 这类要 xcode-select / sourcekit-lsp 的环境：本插件精度更高但依赖重；CodeGraph 装完即用，代价是精度停在名字匹配。
+- 两者可以同时装，但不建议同时在线：语义重叠的工具会让 agent 在两套说法之间挑，且都要占上下文。按任务临时切更划算。
+
+**为什么这里选 LSP 而不是自建图**：交付物里有"改代码"。按符号替换/插入这种操作，只有语言服务器能保证改完不破坏类型；语法图适合回答关系问题，不适合做编辑。这也是本插件把 Serena 当运行时、而不是自己写一个索引器的原因。
+
 ## 截图
 
 | 浅色 | 深色 |
