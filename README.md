@@ -2,7 +2,7 @@
 
 给 DSH 里的 agent 装上一套**语义代码导航**：按项目起停 Serena（LSP over MCP），让它查定义、找引用、只读符号体，而不是 grep 整仓库再整文件读。
 
-简体中文 · [English](./README.en.md)
+简体中文 · [English](./README.en.md) · [版本记录](./CHANGELOG.md)
 
 ![Serena 面板，浅色主题](artifacts/ui-light.png)
 
@@ -214,9 +214,10 @@ dsh plugin --profile desktop install
 1. **安装 Serena** — 运行时卡片执行安装、流式输出日志、结束后校验二进制。卸载移除工具但保留项目索引。
 2. **添加项目** — *选择仓库文件夹…* 走原生选择器，按路径登记，slug 成为 MCP server 名 `serena-<id>`。
 3. **启动** — 只启动该项目的 MCP server；*建索引* 默认按 Swift 生成符号缓存；*停止* 释放 fiber 与子进程。
-4. **全部停止** — 想把工具 schema 从上下文里清掉时用。
+4. **更新索引** — 已有索引的项目显示此按钮及缓存更新时间。代码变动后手动点击：运行中的实例会先停止，索引结束后恢复；失败也会尝试恢复，并显示错误和重试入口。原本停止的项目不会被启动。目前不自动监听代码变化。
+5. **全部停止** — 想把工具 schema 从上下文里清掉时用。
 
-同样能力通过 `serena_manager` 工具给 agent：`status`、`install`、`uninstall`、`add`、`remove`、`start`、`stop`、`stop-all`、`index`。只有 `status` 是并发安全的，其余都会改变 profile 暴露的工具集合。
+同样能力通过 `serena_manager` 工具给 agent：`status`、`install`、`uninstall`、`add`、`remove`、`start`、`stop`、`stop-all`、`index`。`index` 同时支持首次建索引与更新已有索引；只有 `status` 是并发安全的，其余变更串行执行。
 
 ## 实现要点
 
@@ -234,7 +235,7 @@ DSH profile
 - **一项目一 fiber**：`ctx.plugin({ inject, apply }, config)` 为该 server 注册上游 `@deepseek-ai/dsh-mcp-client`；dispose fiber 即 dispose stdio transport，子进程退出、工具注销。
 - **模块解析**：用 `ctx.loader.import` 引入 mcp-client，附带 `.asar`／profile 路径扫描兜底，链接 checkout 与打包应用内都能工作。
 - **索引判定**：`<repo>/.serena/cache/<language>/document_symbols.pkl` 存在即"已建索引"，mtime 作为新鲜度；不从运行中的 server 猜。
-- **进度**：安装/卸载串行执行，报真实阶段（`preparing → installing → verifying → complete`，或 `stopping → uninstalling → verifying`），不编造百分比，日志尾巴上限 16,000 字符。
+- **进度**：安装、卸载、建索引与更新索引共用进度机制。索引执行 `preparing → stopping（原先运行时）→ indexing → verifying → restarting（原先运行时）→ complete`；失败提供诊断与重试。项目启停、移除等变更共用队列，避免与缓存写入冲突。不编造百分比，日志尾巴上限 16,000 字符。
 - **停止顺序**：stdin EOF → `SIGTERM` → `SIGKILL`。涉及端口：dashboard 24282+、Serena tray manager 24224、`start-project-server` 24225。
 
 ### 配置
@@ -253,10 +254,10 @@ DSH profile
 
 ```bash
 npm test          # 宿主冒烟（模拟 cordis 上下文）+ 面板契约
-npm run test:vm   # 12 个模拟后端场景，需要 node --experimental-vm-modules
+npm run test:vm   # 18 个模拟后端场景，需要 node --experimental-vm-modules
 ```
 
-VM 套件把 `child_process`、文件系统、时钟都 mock 掉，所以能在不安装任何东西、不启动 Serena 的前提下跑安装/卸载状态机、HTTP 守卫和进度上报。
+VM 套件把 `child_process`、文件系统、时钟都 mock 掉，所以能在不安装任何东西、不启动 Serena 的前提下跑安装/卸载状态机、HTTP 守卫、索引更新进度、实例恢复及排队操作。
 
 UI fixture 需要浏览器和 DSH 主题包，输入走环境变量：
 

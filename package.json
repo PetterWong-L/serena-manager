@@ -1,6 +1,6 @@
 {
   "name": "@local/serena-manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Run and supervise per-project Serena MCP instances for DSH, with an install/start/stop panel.",
@@ -40,7 +40,8 @@
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
-    "README.en.md"
+    "README.en.md",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {

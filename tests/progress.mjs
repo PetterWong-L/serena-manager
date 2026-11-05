@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const source = await fsp.readFile(fileURLToPath(new URL('../index.js', import.meta.url)), 'utf8');
 const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'serena-progress-'));
 let passed = 0;
-async function harness({ installed = false, uv = true, project = false, restartFailure = false } = {}) {
+async function harness({ installed = false, uv = true, project = false, restartFailure = false, disposeFailure = false } = {}) {
   const dir = await fsp.mkdtemp(path.join(root, 'case-'));
   const home = path.join(dir, 'home');
   const bin = path.join(home, '.local/bin/serena');
@@ -63,13 +63,13 @@ async function harness({ installed = false, uv = true, project = false, restartF
     webServer: { register(route) { routes.set(route.path, route); return () => {}; } },
     connection: { browserPeer: { id: 'owner' }, admit(req) { return req.denied ? { rejection: 401 } : { peer: { id: req.otherPeer ? 'other' : 'owner' } }; } },
     loader: { async import() { return { apply() {}, inject: [] }; } },
-    plugin() { if (restartFailure) throw new Error('mock restart refused'); return { then(done, reject) { if (restartGate) restartGate.then(done, reject); else done(); }, dispose() { disposals += 1; } }; },
+    plugin() { if (restartFailure) throw new Error('mock restart refused'); return { then(done, reject) { if (restartGate) restartGate.then(done, reject); else done(); }, dispose() { if (disposeFailure) throw new Error('mock shutdown refused'); disposals += 1; } }; },
   };
   module.namespace.apply(ctx, { storageDir: dir });
   const status = async () => (await tool.execute({ action: 'status' })).snapshot;
   await status();
   return {
-    status, act: action => tool.execute({ action }), calls, children, routes,
+    status, act: (action, args = {}) => tool.execute({ action, ...args }), calls, children, routes, projectPath,
     get disposals() { return disposals; },
     setInstalled(value) { installed = value; }, setUv(value) { uv = value; }, holdVersion(value) { holdVersions = value; },
     setRestartGate(value) { restartGate = value; }, run: module.namespace.run,
@@ -181,5 +181,96 @@ for (const action of ['install', 'uninstall']) {
   uninstall.emitOutput('permission denied', 'stderr'); uninstall.finish(2);
   assert.equal((await pending).ok, false); const op = (await h.status()).runtimeOperation;
   finished(op, 'failed'); assert.match(op.diagnostic, /2.*permission denied/); passed++;
+}
+// Refresh an existing cache: stop the live instance, expose progress, then restore it.
+{
+  const h = await harness({ installed: true, project: true });
+  const cache = path.join(h.projectPath, '.serena/cache/swift/document_symbols.pkl');
+  await fsp.mkdir(path.dirname(cache), { recursive: true });
+  await fsp.writeFile(cache, 'old symbols');
+  await fsp.utimes(cache, new Date(0), new Date(0));
+  const pending = h.act('index', { id: 'project' });
+  const child = await nextChild(h, 'index');
+  const during = await h.status();
+  assert.equal(during.projects[0].running, false, 'live instance stopped before cache writes');
+  assert.equal(h.disposals, 1);
+  assert.equal(during.runtimeOperation.action, 'index');
+  assert.equal(during.runtimeOperation.projectId, 'project');
+  assert.equal(during.runtimeOperation.phase, 'indexing');
+  child.emitOutput('Indexing changed files\n');
+  assert.match((await h.status()).runtimeOperation.output, /changed files/);
+  let stopped = false;
+  const stop = h.act('stop', { id: 'project' }).then(value => { stopped = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stopped, false, 'mutations wait until indexing and restore finish');
+  await fsp.writeFile(cache, 'updated symbols');
+  child.finish();
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.ok(Date.parse(result.facts.indexedAt) > 0);
+  finished((await h.status()).runtimeOperation, 'succeeded');
+  await stop;
+  assert.equal((await h.status()).projects[0].running, false, 'queued stop wins after restore');
+  assert.equal(h.disposals, 2, 'restored instance was stopped by queued action');
+  assert.equal((await h.status()).projects[0].indexedAt, result.facts.indexedAt);
+  passed++;
+}
+// Failed indexing restores the previously live instance and remains retryable.
+{
+  const h = await harness({ installed: true, project: true });
+  const pending = h.act('index', { id: 'project' });
+  const child = await nextChild(h, 'index');
+  child.emitOutput('language server failed', 'stderr'); child.finish(2);
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.match(result.diagnostic, /2.*language server failed/);
+  assert.equal((await h.status()).projects[0].running, true);
+  finished((await h.status()).runtimeOperation, 'failed');
+  passed++;
+}
+// First-time indexing must produce a cache; an exit code alone is insufficient.
+{
+  const h = await harness({ installed: true });
+  await h.act('add', { path: h.projectPath });
+  const pending = h.act('index', { id: 'project' });
+  const child = await nextChild(h, 'index'); child.finish();
+  assert.equal((await pending).ok, false);
+  assert.match((await h.status()).runtimeOperation.diagnostic, /cache.*missing/);
+  assert.equal((await h.status()).projects[0].running, false);
+  passed++;
+}
+// A failed restore remains required on retry unless the user explicitly stops the project.
+for (const stopBeforeRetry of [false, true]) {
+  const h = await harness({ installed: true, project: true });
+  const cache = path.join(h.projectPath, '.serena/cache/swift/document_symbols.pkl');
+  await fsp.mkdir(path.dirname(cache), { recursive: true });
+  await fsp.writeFile(cache, 'symbols');
+  let rejectRestart;
+  h.setRestartGate(new Promise((resolve, reject) => { rejectRestart = reject; }));
+  const pending = h.act('index', { id: 'project' });
+  const child = await nextChild(h, 'index'); child.finish();
+  await until(async () => (await h.status()).runtimeOperation.phase === 'restarting', 'index restore');
+  rejectRestart(new Error('temporary restore failure'));
+  assert.equal((await pending).ok, false);
+  assert.equal((await h.status()).projects[0].running, false);
+  h.setRestartGate(null);
+  h.children.length = 0;
+  if (stopBeforeRetry) await h.act('stop', { id: 'project' });
+  const retry = h.act('index', { id: 'project' });
+  (await nextChild(h, 'index')).finish();
+  assert.equal((await retry).ok, true);
+  assert.equal((await h.status()).projects[0].running, !stopBeforeRetry, 'retry preserves restore intent unless explicitly stopped');
+  passed++;
+}
+// Never write the cache when the previous server could not be stopped.
+{
+  const h = await harness({ installed: true, project: true, disposeFailure: true });
+  const result = await h.act('index', { id: 'project' });
+  assert.equal(result.ok, false);
+  assert.match(result.diagnostic, /Could not stop.*shutdown refused/);
+  assert.equal(h.calls.some(args => args.includes('index')), false, 'index command never starts after failed shutdown');
+  assert.equal((await h.status()).projects[0].running, true, 'failed shutdown retains live record');
+  finished((await h.status()).runtimeOperation, 'failed');
+  passed++;
 }
 console.log(`PASS ${passed} mocked backend scenarios; no real subprocess spawned. Artifacts: ${root}`);

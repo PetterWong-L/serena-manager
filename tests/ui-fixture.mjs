@@ -21,10 +21,11 @@ const page = await browser.newPage({ viewport: { width: 1120, height: 960 } });
 const errors = [];
 page.on('pageerror', e => errors.push(e.message));
 page.on('console', e => { if (e.type() === 'error') errors.push(e.text()); });
-let installed = true, operation = null, postCount = 0, failInstall = false, failAdd = false;
+let installed = true, operation = null, postCount = 0, failInstall = false, failAdd = false, failIndex = false;
+const indexIds = [];
 const addPaths = [];
 const projects = [
-  { id: 'ios-app', name: 'ios-app', path: '/Users/example/Projects/ios-app', running: true, indexed: true, tools: 3, startedAt: new Date().toISOString() },
+  { id: 'ios-app', name: 'ios-app', path: '/Users/example/Projects/ios-app', running: true, indexed: true, indexedAt: '2026-11-05T02:00:00.000Z', tools: 3, startedAt: new Date().toISOString() },
   { id: 'ios-legacy-app', name: 'ios-legacy-app', path: '/Users/example/Projects/ios-legacy-app', running: false, indexed: true, tools: 0 },
   { id: 'long-path', name: 'reference-workspace-with-a-long-project-name', path: '/Users/example/Projects/platform-reference-app-with-a-very-long-name/modules/feature-payments', running: false, indexed: false, tools: 0 },
 ];
@@ -35,6 +36,20 @@ await page.route('**/serena-manager/manage', async route => {
   postCount++;
   const args = route.request().postDataJSON();
   if (args.action === 'add') { addPaths.push(args.path); await route.fulfill({ json: failAdd ? { ok: false, diagnostic: 'Project directory does not exist' } : { ok: true } }); return; }
+  if (args.action === 'index') {
+    indexIds.push(args.id);
+    assert.equal(args.id, 'ios-app', 'index and retry target the selected project');
+    const startedAt = new Date().toISOString();
+    operation = { id: String(postCount), projectId: args.id, action: 'index', status: 'running', phase: 'indexing', startedAt, output: 'Indexing changed files…' };
+    await delay(1600);
+    operation.status = failIndex ? 'failed' : 'succeeded';
+    operation.phase = failIndex ? 'failed' : 'complete';
+    operation.diagnostic = failIndex ? 'Language server could not index project' : null;
+    operation.finishedAt = new Date().toISOString();
+    if (!failIndex) projects[0].indexedAt = operation.finishedAt;
+    await route.fulfill({ json: { ok: !failIndex, runtimeOperation: operation, diagnostic: operation.diagnostic } });
+    return;
+  }
   if (!['install', 'uninstall'].includes(args.action)) { await route.fulfill({ json: { ok: true } }); return; }
   const startedAt = new Date().toISOString();
   operation = { id: String(postCount), action: args.action, status: 'running', phase: 'preparing', startedAt, updatedAt: startedAt, finishedAt: null, output: '' };
@@ -110,6 +125,24 @@ try {
   await page.evaluate(() => { window.__DSH_DIRECTORY_PICKER__ = window.savedPicker; });
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('button')].some(el => el.textContent === '选择仓库文件夹…' && !el.disabled));
+  const liveCard = page.locator('.sm-card').filter({ has: page.getByRole('heading', { name: 'ios-app', exact: true }) });
+  const refreshIndex = () => liveCard.getByRole('button', { name: '更新索引', exact: true });
+  assert.equal(await refreshIndex().isEnabled(), true, 'running project can update its index');
+  assert.equal(await liveCard.locator('time').getAttribute('datetime'), projects[0].indexedAt);
+  assert.equal(await page.getByRole('button', { name: '建索引', exact: true }).count(), 1, 'unindexed project keeps build action');
+  failIndex = true;
+  await refreshIndex().evaluate(el => { el.click(); el.click(); });
+  await page.locator('.sm-progress[data-status="running"]').waitFor();
+  await page.locator('.sm-log pre').filter({ hasText: 'Indexing changed files' }).waitFor({ state: 'attached' });
+  await page.screenshot({ path: output + '/ui-indexing.png', fullPage: true, animations: 'disabled' });
+  await page.locator('.sm-progress[data-status="failed"]').waitFor();
+  assert.equal(indexIds.length, 1, 'double click sends one index request');
+  await page.getByRole('alert').filter({ hasText: 'Language server could not index' }).waitFor();
+  failIndex = false;
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await page.locator('.sm-progress[data-status="succeeded"]').waitFor();
+  assert.deepEqual(indexIds, ['ios-app', 'ios-app'], 'retry retains project id');
+  assert.equal(await liveCard.locator('time').getAttribute('datetime'), projects[0].indexedAt, 'successful refresh updates timestamp');
   page.on('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: '卸载', exact: true }).click();
   await page.locator('[role="progressbar"]').waitFor();
@@ -140,5 +173,5 @@ try {
   await page.screenshot({ path: output + '/ui-narrow.png', fullPage: true, animations: 'disabled' });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.deepEqual(errors, [], 'no React or browser runtime errors');
-  console.log(JSON.stringify({ result: 'PASS', fixture: true, actualElectron: false, actualUvActions: false, nativeThemeCSS: true, assertions: ['light/dark native tokens','three narrow widths','project search','native picker contract','cancel without mutation','picker double click deduplication','unicode and spaced paths','registration failure and retry','picker failure recovery','web browser desktop hint','install/uninstall stages and output','no fake percent','mutation lock','double click deduplication','failure and retry','success complete'], screenshots: output }));
+  console.log(JSON.stringify({ result: 'PASS', fixture: true, actualElectron: false, actualUvActions: false, nativeThemeCSS: true, assertions: ['live project index refresh','index progress and output','index failure retry preserves project id','updated cache timestamp','light/dark native tokens','three narrow widths','project search','native picker contract','cancel without mutation','picker double click deduplication','unicode and spaced paths','registration failure and retry','picker failure recovery','web browser desktop hint','install/uninstall stages and output','no fake percent','mutation lock','double click deduplication','failure and retry','success complete'], screenshots: output }));
 } finally { await browser.close(); }

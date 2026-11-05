@@ -2,7 +2,7 @@
 
 Give the agent in DSH **semantic code navigation**: start Serena (LSP over MCP) per project and let it resolve definitions, find references and read symbol bodies instead of grepping the repo and reading whole files.
 
-English · [简体中文](./README.md)
+English · [简体中文](./README.md) · [Changelog](./CHANGELOG.md)
 
 ![Serena panel, light theme](artifacts/ui-light.png)
 
@@ -214,9 +214,10 @@ When it finishes you should see `serena_manager` plus `mcp__serena-<project>__se
 1. **Install Serena** — the runtime card runs the install, streams the output and verifies the binary afterwards. Uninstall removes the tool but keeps your project indexes.
 2. **Add a project** — *选择仓库文件夹…* opens the native picker; the folder is registered by path and its slug becomes the MCP server name `serena-<id>`.
 3. **Start** — starts the MCP server for that project only. *Index* builds the symbol cache with Swift as the default language; *Stop* disposes the fiber and the child process.
-4. **Stop all** — the panic button when you want the tool schema out of the context.
+4. **Update index** — projects with an existing index show this button and the cache timestamp. Click after code changes: a running instance stops before indexing and resumes afterwards, including after indexing fails. Errors provide a retry action. Projects that were stopped remain stopped. Updates are manual; code changes are not watched automatically.
+5. **Stop all** — the panic button when you want the tool schema out of the context.
 
-The same operations are available to the agent through the `serena_manager` tool: `status`, `install`, `uninstall`, `add`, `remove`, `start`, `stop`, `stop-all`, `index`. `status` is the only concurrency-safe action; everything else mutates which tools the profile exposes.
+The same operations are available to the agent through the `serena_manager` tool: `status`, `install`, `uninstall`, `add`, `remove`, `start`, `stop`, `stop-all`, `index`. Use `index` to build or refresh a project's index. `status` is the only concurrency-safe action; all mutations are serialized.
 
 ## How it works
 
@@ -234,7 +235,7 @@ DSH profile
 - **One fiber per project.** `ctx.plugin({ inject, apply }, config)` registers the upstream `@deepseek-ai/dsh-mcp-client` for that server; disposing the fiber disposes the stdio transport, which stops the child and unregisters the tools.
 - **Module resolution.** The mcp-client is imported with `ctx.loader.import`, with a `.asar`/profile path scan as a fallback, so it works from a linked checkout and from inside the packaged app.
 - **Index detection.** An index is "present" when `<repo>/.serena/cache/<language>/document_symbols.pkl` exists; its mtime is shown as freshness. Nothing is inferred from a running server.
-- **Progress.** Install/uninstall are serialized and report real phases (`preparing → installing → verifying → complete`, or `stopping → uninstalling → verifying`). No fabricated percentages; the log tail is capped at 16,000 characters.
+- **Progress.** Install, uninstall, initial indexing and index updates share progress reporting. Indexing runs `preparing → stopping (if running) → indexing → verifying → restarting (if previously running) → complete`, with diagnostics and retry on failure. Project start, stop and removal share the queue to avoid concurrent cache access. No fabricated percentages; the log tail is capped at 16,000 characters.
 - **Stop order.** stdin EOF, then `SIGTERM`, then `SIGKILL`. Ports in use: dashboard 24282+, Serena tray manager 24224, `start-project-server` 24225.
 
 ### Configuration
@@ -253,10 +254,10 @@ Both routes sit behind the DSH connection owner check: only the owner browser pe
 
 ```bash
 npm test          # host smoke (mocked cordis context) + panel contract
-npm run test:vm   # 12 mocked backend scenarios; needs node --experimental-vm-modules
+npm run test:vm   # 18 mocked backend scenarios; needs node --experimental-vm-modules
 ```
 
-The VM suite mocks `child_process`, the filesystem and the clock, so it exercises the install/uninstall state machine, the HTTP guards and the progress reporting without installing anything or spawning Serena.
+The VM suite mocks `child_process`, the filesystem and the clock, so it exercises the install/uninstall state machine, HTTP guards, index-update progress, instance restoration and queued operations without installing anything or spawning Serena.
 
 The UI fixture needs a browser and the DSH theme bundle, so its inputs are environment variables:
 

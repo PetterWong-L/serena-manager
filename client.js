@@ -25,7 +25,10 @@ window.__ModuleLoader__.load({
         phase_uninstalling: 'Uninstalling Serena', phase_verifying: 'Verifying the result', phase_restarting: 'Restoring instances',
         phase_complete: 'Completed', phase_failed: 'Operation failed', elapsed: 'Elapsed', unknownDuration: 'Waiting for the installer; duration depends on downloads.',
         installDone: 'Serena is ready', uninstallDone: 'Serena has been uninstalled', retry: 'Retry',
-        uvMissing: 'uv is required before Serena can be installed.', indexRunning: 'Stop this instance before rebuilding its index.',
+        uvMissing: 'uv is required before Serena can be installed.',
+        updateIndex: 'Update index', updatingIndex: 'Updating index…', indexDone: 'Project index is ready', indexedAt: 'Index updated',
+        phase_indexing: 'Indexing project files', indexDuration: 'Scanning project files; duration depends on project size.',
+        indexHint: 'After code changes, update the index. A running instance will stop briefly and resume afterwards.',
       },
       zh: {
         title: 'Serena 实例', subtitle: '为当前项目开启代码语义导航。',
@@ -48,7 +51,10 @@ window.__ModuleLoader__.load({
         phase_uninstalling: '卸载 Serena', phase_verifying: '校验操作结果', phase_restarting: '恢复已启用实例',
         phase_complete: '已完成', phase_failed: '操作失败', elapsed: '已用时', unknownDuration: '正在等待安装器，耗时取决于下载情况。',
         installDone: 'Serena 已就绪', uninstallDone: 'Serena 已卸载', retry: '重试',
-        uvMissing: '需要先安装 uv，才能安装 Serena。', indexRunning: '请先停止此实例，再重新建立索引。',
+        uvMissing: '需要先安装 uv，才能安装 Serena。',
+        updateIndex: '更新索引', updatingIndex: '正在更新索引…', indexDone: '项目索引已就绪', indexedAt: '索引更新于',
+        phase_indexing: '扫描项目文件并更新索引', indexDuration: '正在扫描项目文件，耗时取决于项目大小。',
+        indexHint: '代码变动后请更新索引；运行中的实例会短暂停止，结束后自动恢复。',
       },
     };
     const css = `
@@ -87,20 +93,21 @@ window.__ModuleLoader__.load({
           React.useEffect(() => { if (!running) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [running]);
           if (!operation) return null;
           const isInstall = operation.action === 'install';
-          const stages = isInstall ? ['preparing', 'installing', 'verifying', 'restarting'] : ['stopping', 'uninstalling', 'verifying'];
+          const isIndex = operation.action === 'index';
+          const stages = isIndex ? ['preparing', 'stopping', 'indexing', 'verifying', 'restarting'] : isInstall ? ['preparing', 'installing', 'verifying', 'restarting'] : ['stopping', 'uninstalling', 'verifying'];
           const index = stages.indexOf(operation.phase);
           const succeeded = operation.status === 'succeeded';
-          const title = running ? t(isInstall ? 'installing' : 'uninstalling') : succeeded ? t(isInstall ? 'installDone' : 'uninstallDone') : t('failed');
+          const title = running ? t(isIndex ? 'updatingIndex' : isInstall ? 'installing' : 'uninstalling') : succeeded ? t(isIndex ? 'indexDone' : isInstall ? 'installDone' : 'uninstallDone') : t('failed');
           const elapsed = Math.max(0, Math.floor(((operation.finishedAt ? Date.parse(operation.finishedAt) : now) - Date.parse(operation.startedAt)) / 1000));
           const time = Number.isFinite(elapsed) ? `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}` : '0:00';
           return h('div', { className: 'sm-progress', 'data-status': operation.status },
             h('div', { className: 'sm-progress-top' }, h('div', { className: 'sm-progress-title', role: 'status', 'aria-live': 'polite' }, running ? h('span', { className: 'sm-spinner', 'aria-hidden': true }) : h(Glyph, { name: succeeded ? 'check' : 'close', size: 14 }), title), h('span', { className: 'sm-muted' }, `${t('elapsed')} ${time}`)),
             h('div', { className: 'sm-track', 'data-running': running, role: 'progressbar', 'aria-label': title, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': succeeded ? 100 : undefined, 'aria-valuetext': t(`phase_${operation.phase}`) }, h('div', { className: 'sm-fill' })),
             h('ol', { className: 'sm-steps', 'aria-label': title }, stages.map((phase, i) => { const state = succeeded || (index >= 0 && i < index) ? 'done' : i === index ? 'current' : 'pending'; return h('li', { key: phase, 'data-state': state, 'aria-current': state === 'current' ? 'step' : undefined }, h('span', { className: 'sm-step-dot', 'aria-hidden': true }, state === 'done' ? '✓' : i + 1), t(`phase_${phase}`)); })),
-            running && h('p', { className: 'sm-progress-hint' }, t(operation.phase === 'preparing' ? 'waiting' : 'unknownDuration')),
+            running && h('p', { className: 'sm-progress-hint' }, t(operation.phase === 'preparing' ? 'waiting' : isIndex ? 'indexDuration' : 'unknownDuration')),
             operation.diagnostic && h('p', { className: 'sm-card-error', role: 'alert' }, operation.diagnostic),
             operation.output && h('details', { className: 'sm-log' }, h('summary', null, t('logs')), h('pre', null, operation.output)),
-            operation.status === 'failed' && h('button', { className: 'sm-btn', type: 'button', style: { marginTop: 10 }, onClick: () => onRetry(operation.action) }, t('retry')));
+            operation.status === 'failed' && h('button', { className: 'sm-btn', type: 'button', style: { marginTop: 10 }, onClick: () => onRetry(operation) }, t('retry')));
         }
         function Panel() {
           const locale = React.useSyncExternalStore(subscribe, getLocale, getLocale);
@@ -122,20 +129,20 @@ window.__ModuleLoader__.load({
             if (requestLock.current || snapshot?.runtimeOperation?.status === 'running') return false;
             requestLock.current = true;
             setBusy(`${args.action}:${args.id || ''}`); setOutcome(null);
-            const runtimeAction = ['install', 'uninstall'].includes(args.action);
+            const runtimeAction = ['install', 'uninstall', 'index'].includes(args.action);
             const startedAt = new Date().toISOString();
-            if (runtimeAction) setLocalOperation({ id: `local-${startedAt}`, previousId: snapshot?.runtimeOperation?.id, action: args.action, status: 'running', phase: args.action === 'install' ? 'preparing' : 'stopping', startedAt, output: '' });
+            if (runtimeAction) setLocalOperation({ id: `local-${startedAt}`, previousId: snapshot?.runtimeOperation?.id, projectId: args.id, action: args.action, status: 'running', phase: args.action === 'uninstall' ? 'stopping' : 'preparing', startedAt, output: '' });
             try {
               const response = await fetch(new URL('serena-manager/manage', document.baseURI), { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args) });
               const value = await response.json().catch(() => ({ application: 'failed', error: { diagnostic: `HTTP ${response.status}` } }));
               if (!response.ok && !failed(value)) value.application = 'failed';
               if (alive.current) {
                 setOutcome(runtimeAction ? null : value); setRefresh(n => n + 1);
-                if (runtimeAction) setLocalOperation(value.runtimeOperation || { id: `local-${startedAt}`, previousId: snapshot?.runtimeOperation?.id, action: args.action, status: failed(value) ? 'failed' : 'succeeded', phase: failed(value) ? 'failed' : 'complete', startedAt, finishedAt: new Date().toISOString(), output: value.output || '', diagnostic: value.diagnostic || value.error?.diagnostic || value.error?.code });
+                if (runtimeAction) setLocalOperation(value.runtimeOperation || { id: `local-${startedAt}`, previousId: snapshot?.runtimeOperation?.id, projectId: args.id, action: args.action, status: failed(value) ? 'failed' : 'succeeded', phase: failed(value) ? 'failed' : 'complete', startedAt, finishedAt: new Date().toISOString(), output: value.output || '', diagnostic: value.diagnostic || value.error?.diagnostic || value.error?.code });
               }
               return !failed(value);
             } catch {
-              if (alive.current) { if (runtimeAction) setLocalOperation({ id: `local-${startedAt}`, previousId: snapshot?.runtimeOperation?.id, action: args.action, status: 'failed', phase: 'failed', startedAt, finishedAt: new Date().toISOString(), diagnostic: t('unavailable') }); else setOutcome({ application: 'failed', error: { diagnostic: t('unavailable') } }); setRefresh(n => n + 1); }
+              if (alive.current) { if (runtimeAction) setLocalOperation({ id: `local-${startedAt}`, previousId: snapshot?.runtimeOperation?.id, projectId: args.id, action: args.action, status: 'failed', phase: 'failed', startedAt, finishedAt: new Date().toISOString(), diagnostic: t('unavailable') }); else setOutcome({ application: 'failed', error: { diagnostic: t('unavailable') } }); setRefresh(n => n + 1); }
               return false;
             } finally { requestLock.current = false; if (alive.current) setBusy(''); }
           }
@@ -162,7 +169,7 @@ window.__ModuleLoader__.load({
             return () => { disposed = true; clearTimeout(timer); active?.abort(); document.removeEventListener('visibilitychange', visibility); };
           }, [refresh, busy]);
           const remoteOperation = snapshot?.runtimeOperation;
-          const remoteMatchesLocal = localOperation && remoteOperation && remoteOperation.id !== localOperation.previousId && remoteOperation.action === localOperation.action && Date.parse(remoteOperation.startedAt) >= Date.parse(localOperation.startedAt) - 1000;
+          const remoteMatchesLocal = localOperation && remoteOperation && remoteOperation.id !== localOperation.previousId && remoteOperation.action === localOperation.action && remoteOperation.projectId === localOperation.projectId && Date.parse(remoteOperation.startedAt) >= Date.parse(localOperation.startedAt) - 1000;
           const operation = localOperation ? remoteMatchesLocal ? remoteOperation : localOperation : remoteOperation;
           const locked = picking || Boolean(busy) || remoteOperation?.status === 'running';
           const canPickDirectory = typeof window.__DSH_DIRECTORY_PICKER__?.pick === 'function';
@@ -195,16 +202,18 @@ window.__ModuleLoader__.load({
               h('div', { className: 'sm-runtime-top' }, h('div', { className: 'sm-runtime-title' }, h('h2', null, t('serena')), snapshot && h('span', { className: 'sm-badge', 'data-status': badge[0] }, h('span', { className: 'sm-dot' }), t(badge[1])), serena?.version && h('span', { className: 'sm-muted' }, serena.version)), h('div', { className: 'sm-actions' }, !serena?.installed && action('install', { action: 'install' }, { 'data-kind': 'primary', disabled: locked || !serena?.uv || !snapshot }), serena?.installed && h('button', { className: 'sm-btn', 'data-kind': 'danger', type: 'button', disabled: locked, onClick: () => { if (window.confirm(t('confirmUninstall'))) request({ action: 'uninstall' }); } }, t('uninstall')))),
               h('p', { className: 'sm-runtime-desc' }, t('installHint')),
               snapshot && !serena?.uv && h('p', { className: 'sm-card-error' }, t('uvMissing')),
-              h(Progress, { operation, onRetry: retryAction => request({ action: retryAction }) }),
+              h(Progress, { operation: operation?.action === 'index' ? null : operation, onRetry: retry => request({ action: retry.action, id: retry.projectId }) }),
               h('details', { className: 'sm-runtime-details' }, h('summary', null, t('environment')), h('dl', { className: 'sm-runtime-meta' }, h('dt', null, 'Serena'), h('dd', { className: 'sm-code' }, serena?.bin || '—'), h('dt', null, 'uv'), h('dd', { className: 'sm-code' }, serena?.uv || '—'), h('dt', null, t('autoStart')), h('dd', null, t(snapshot?.autoStart ? 'autoStartOn' : 'autoStartOff'))))),
             h('section', { 'aria-label': t('projectHeading') },
               h('div', { className: 'sm-section-heading' }, h('div', null, h('h2', null, t('projectHeading')), h('p', { className: 'sm-muted' }, t('projectHint'))), action('stopAll', { action: 'stop-all' }, { 'data-kind': 'quiet', disabled: locked || !snapshot?.totals.running })),
               h('div', { className: 'sm-add' }, h('button', { className: 'sm-btn', 'data-kind': 'primary', type: 'button', disabled: locked || !snapshot || !canPickDirectory, onClick: chooseProject }, picking ? h('span', { className: 'sm-spinner', 'aria-hidden': true }) : h(Glyph, { name: 'folder', size: 14 }), t(picking ? 'selectingProject' : 'selectProject')), h('span', { className: 'sm-muted' }, t(canPickDirectory ? 'pickerHint' : 'pickerUnavailable'))),
+              h('p', { className: 'sm-muted' }, t('indexHint')),
+              h(Progress, { operation: operation?.action === 'index' ? operation : null, onRetry: retry => request({ action: retry.action, id: retry.projectId }) }),
               outcome && h('div', { className: failed(outcome) ? 'sm-alert' : 'sm-outcome', role: failed(outcome) ? 'alert' : 'status' }, failed(outcome) ? outcome.error?.diagnostic || outcome.error?.code || outcome.diagnostic || t('failed') : t('updated'), (outcome.output || outcome.index?.output) && h('details', { className: 'sm-log' }, h('summary', null, t('logs')), h('pre', null, outcome.output || outcome.index.output))),
               snapshot?.totals.projects > 1 && h('div', { className: 'sm-search-row' }, h('input', { className: 'sm-input sm-search', type: 'search', value: search, placeholder: t('search'), 'aria-label': t('search'), onChange: e => setSearch(e.target.value) })),
               !snapshot && loading ? h('p', { className: 'sm-muted', role: 'status' }, t('pending')) : projects.length ? h('div', { className: 'sm-project-list' }, projects.map(project => h('article', { key: project.id, className: 'sm-card', 'data-running': project.running },
-                h('div', { style: { minWidth: 0 } }, h('h3', null, project.name), h('div', { className: 'sm-card-path' }, project.path), h('div', { className: 'sm-badges' }, h('span', { className: 'sm-badge', 'data-status': project.running ? 'ok' : 'off' }, h('span', { className: 'sm-dot' }), t(project.running ? 'runningBadge' : 'stoppedBadge')), h('span', { className: 'sm-muted' }, t(project.indexed ? 'indexedBadge' : 'notIndexedBadge')), project.running && h('span', { className: 'sm-muted' }, `${project.tools} ${t('toolsCount')}`), project.running && project.startedAt && h('span', { className: 'sm-muted' }, `${t('started')} ${new Date(project.startedAt).toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })}`)), project.error && h('p', { className: 'sm-card-error', role: 'alert' }, project.error)),
-                h('div', { className: 'sm-actions' }, action(project.running ? 'stop' : 'start', { action: project.running ? 'stop' : 'start', id: project.id }, { 'data-kind': 'primary', disabled: locked || !serena?.bin }), action(busy === `index:${project.id}` ? 'indexing' : 'index', { action: 'index', id: project.id }, { disabled: locked || !serena?.bin || project.running, title: project.running ? t('indexRunning') : t('index') }), action('remove', { action: 'remove', id: project.id }, { 'data-kind': 'danger' }))))) : snapshot && h('div', { className: 'sm-empty' }, h(Glyph, { name: 'folder', size: 28 }), h('h3', null, t(snapshot.totals.projects ? 'noMatch' : 'empty')), h('p', { className: 'sm-muted' }, t(snapshot.totals.projects ? 'noMatchHint' : 'emptyHint'))),
+                h('div', { style: { minWidth: 0 } }, h('h3', null, project.name), h('div', { className: 'sm-card-path' }, project.path), h('div', { className: 'sm-badges' }, h('span', { className: 'sm-badge', 'data-status': project.running ? 'ok' : 'off' }, h('span', { className: 'sm-dot' }), t(project.running ? 'runningBadge' : 'stoppedBadge')), h('span', { className: 'sm-muted' }, t(project.indexed ? 'indexedBadge' : 'notIndexedBadge')), project.indexedAt && h('span', { className: 'sm-muted' }, `${t('indexedAt')} `, h('time', { dateTime: project.indexedAt }, new Date(project.indexedAt).toLocaleString(language))), project.running && h('span', { className: 'sm-muted' }, `${project.tools} ${t('toolsCount')}`), project.running && project.startedAt && h('span', { className: 'sm-muted' }, `${t('started')} ${new Date(project.startedAt).toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })}`)), project.error && h('p', { className: 'sm-card-error', role: 'alert' }, project.error)),
+                h('div', { className: 'sm-actions' }, action(project.running ? 'stop' : 'start', { action: project.running ? 'stop' : 'start', id: project.id }, { 'data-kind': 'primary', disabled: locked || !serena?.bin }), action(operation?.action === 'index' && operation.projectId === project.id && operation.status === 'running' ? (project.indexed ? 'updatingIndex' : 'indexing') : project.indexed ? 'updateIndex' : 'index', { action: 'index', id: project.id }, { disabled: locked || !serena?.bin, title: t('indexHint') }), action('remove', { action: 'remove', id: project.id }, { 'data-kind': 'danger' }))))) : snapshot && h('div', { className: 'sm-empty' }, h(Glyph, { name: 'folder', size: 28 }), h('h3', null, t(snapshot.totals.projects ? 'noMatch' : 'empty')), h('p', { className: 'sm-muted' }, t(snapshot.totals.projects ? 'noMatchHint' : 'emptyHint'))),
               h('p', { className: 'sm-note' }, h(Glyph, { name: 'info', size: 13 }), t('note'))),
             snapshot && h('footer', { className: 'sm-foot' }, `${t('updated')} ${new Date(snapshot.observedAt).toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })}`)));
         }

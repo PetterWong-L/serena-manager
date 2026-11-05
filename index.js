@@ -275,15 +275,18 @@ class Instances {
     return { changed: true, state: 'started' };
   }
 
-  async stop(id) {
+  async stop(id, { strict = false } = {}) {
     // A stop that lands while the instance is still starting must wait for the
     // fiber to exist, otherwise the start would resurrect a stopped instance.
     const inflight = this.pending.get(id);
     if (inflight) { try { await inflight; } catch { /* the start failed on its own */ } }
     const record = this.live.get(id);
     if (!record) return { changed: false, state: 'already-stopped' };
+    try { await record.fiber?.dispose(); } catch (error) {
+      this.logger.warn(`serena-manager: dispose failed for ${id}: ${String(error)}`);
+      if (strict) throw new Error(`Could not stop ${id}: ${String(error?.message ?? error)}`);
+    }
     this.live.delete(id);
-    try { await record.fiber?.dispose(); } catch (error) { this.logger.warn(`serena-manager: dispose failed for ${id}: ${String(error)}`); }
     return { changed: true, state: 'stopped' };
   }
 
@@ -356,6 +359,7 @@ export function apply(ctx, config = {}) {
         path: project.path,
         enabled: project.enabled !== false,
         indexed: facts.indexed,
+        indexedAt: facts.indexedAt,
         running: Boolean(live),
         startedAt: live?.startedAt ?? null,
         error: live?.error ?? null,
@@ -403,6 +407,7 @@ export function apply(ctx, config = {}) {
   }
 
   async function removeProject(id) {
+    indexRestorePending.delete(id);
     await instances.stop(id);
     const before = store.data.projects.length;
     store.data.projects = store.data.projects.filter(p => p.id !== id);
@@ -415,6 +420,7 @@ export function apply(ctx, config = {}) {
     const project = store.data.projects.find(p => p.id === id);
     if (!project) throw new Error('unknown project');
     project.enabled = enabled;
+    if (!enabled) indexRestorePending.delete(id);
     await store.save();
     const status = await serenaStatus(store);
     if (enabled) {
@@ -425,23 +431,59 @@ export function apply(ctx, config = {}) {
     return { ...outcome, enabled: false };
   }
 
-  async function indexProject(id) {
-    const project = store.data.projects.find(p => p.id === id);
-    if (!project) throw new Error('unknown project');
-    const status = await serenaStatus(store);
-    if (!status.bin) throw new Error('Serena is not installed');
-    const env = { SERENA_HOME: store.data.serenaHome };
-    // `project index <path> --ls swift` is fully non-interactive and auto-creates
-    // .serena/project.yml plus the SERENA_HOME projects entry when missing.
-    const indexed = await run(status.bin, ['project', 'index', project.path, '--ls', 'swift'], { env, timeoutMs: 900000 });
-    return {
-      changed: indexed.ok,
-      index: { ok: indexed.ok, output: (indexed.stdout + indexed.stderr).trim().slice(-2000) },
-      facts: await projectFacts(project.path),
-    };
+  function indexProject(id) {
+    return runtimeTask('index', async ({ phase, append, onOutput }) => {
+      const project = store.data.projects.find(p => p.id === id);
+      if (!project) throw new Error('unknown project');
+      const status = await readRuntimeStatus();
+      if (!status.bin) throw new Error('Serena is not installed');
+      const wasRunning = instances.live.has(id);
+      const shouldRestore = wasRunning || indexRestorePending.has(id);
+      const diagnostics = [];
+      let indexed, facts;
+      if (wasRunning) {
+        phase('stopping');
+        await instances.stop(id, { strict: true });
+        indexRestorePending.add(id);
+      }
+      try {
+        phase('indexing');
+        append(`Indexing ${project.name ?? id}…\n`);
+        // Re-running the upstream index command refreshes the existing cache.
+        // --ls only applies when auto-creating project.yml for a new project.
+        indexed = await run(status.bin, ['project', 'index', project.path, '--ls', 'swift'], {
+          env: { SERENA_HOME: store.data.serenaHome }, timeoutMs: 900000, onOutput,
+        });
+        phase('verifying');
+        facts = await projectFacts(project.path);
+        if (!indexed.ok) diagnostics.push(`Serena index exited with ${indexed.code ?? 'an error'}: ${indexed.stderr.trim() || indexed.stdout.trim()}`);
+        else if (!facts.indexed) diagnostics.push('Serena reported success but the index cache is missing');
+      } catch (error) {
+        diagnostics.push(String(error?.message ?? error));
+      } finally {
+        if (shouldRestore) {
+          phase('restarting');
+          try {
+            await instances.start(project, status);
+            indexRestorePending.delete(id);
+            append(`\nRestored ${project.name ?? id}\n`);
+          } catch (error) {
+            diagnostics.push(`Instance restore failed: ${String(error?.message ?? error)}`);
+          }
+        }
+      }
+      const diagnostic = diagnostics.join('; ');
+      if (diagnostic) append(`\n${diagnostic}\n`);
+      return {
+        changed: Boolean(indexed?.ok && facts?.indexed), ok: !diagnostic,
+        index: { ok: Boolean(indexed?.ok && facts?.indexed), output: ((indexed?.stdout ?? '') + (indexed?.stderr ?? '')).trim().slice(-2000) },
+        facts, ...(diagnostic ? { diagnostic } : {}),
+      };
+    }, { projectId: id });
   }
 
-  // Keep runtime mutations in one queue to avoid overlapping install/uninstall.
+  const indexRestorePending = new Set();
+  // Serialize runtime and project mutations to protect cache writes and instance state.
   let runtimeQueue = Promise.resolve();
   const serialised = task => {
     const next = runtimeQueue.then(task, task);
@@ -449,12 +491,12 @@ export function apply(ctx, config = {}) {
     return next;
   };
 
-  function runtimeTask(action, task) {
+  function runtimeTask(action, task, metadata = {}) {
     return serialised(async () => {
       const now = new Date().toISOString();
       const operation = runtimeOperation = {
         id: `${Date.now()}-${++runtimeSequence}`,
-        action, status: 'running', phase: 'preparing',
+        ...metadata, action, status: 'running', phase: 'preparing',
         startedAt: now, updatedAt: now, finishedAt: null, output: '',
       };
       const update = changes => Object.assign(operation, changes, { updatedAt: new Date().toISOString() });
@@ -553,24 +595,25 @@ export function apply(ctx, config = {}) {
       case 'status': return { application: 'applied', snapshot: await snapshot() };
       case 'install': return { application: 'applied', ...await installSerena() };
       case 'uninstall': return { application: 'applied', ...await uninstallSerena() };
-      case 'add': return { application: 'applied', ...await addProject(args.path) };
-      case 'remove': return { application: 'applied', ...await removeProject(args.id) };
-      case 'start': return { application: 'applied', ...await setEnabled(args.id, true) };
-      case 'stop': return { application: 'applied', ...await setEnabled(args.id, false) };
+      case 'add': return { application: 'applied', ...await serialised(() => addProject(args.path)) };
+      case 'remove': return { application: 'applied', ...await serialised(() => removeProject(args.id)) };
+      case 'start': return { application: 'applied', ...await serialised(() => setEnabled(args.id, true)) };
+      case 'stop': return { application: 'applied', ...await serialised(() => setEnabled(args.id, false)) };
       case 'index': return { application: 'applied', ...await indexProject(args.id) };
-      case 'stop-all': {
+      case 'stop-all': return serialised(async () => {
+        indexRestorePending.clear();
         await instances.stopAll();
         for (const project of store.data.projects) project.enabled = false;
         await store.save();
         return { application: 'applied', changed: true };
-      }
+      });
       default: throw new Error(`unknown action: ${String(action)}`);
     }
   }
 
   ctx.effect(() => ctx.tools.register({
     name: 'serena_manager',
-    description: 'Inspect, start, stop or register per-project Serena (LSP) MCP instances, install or uninstall Serena, and index a project. Read-only for status; other actions change which MCP tools this profile exposes.',
+    description: 'Inspect, start, stop or register per-project Serena (LSP) MCP instances, install or uninstall Serena, and build or update a project index. Indexing temporarily stops and restores a running project instance. Read-only for status; mutations run serially.',
     parameters: {
       type: 'object',
       required: ['action'],
