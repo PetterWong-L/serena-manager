@@ -1,19 +1,42 @@
 # serena-manager
 
-A DSH plugin that installs, runs and supervises **[Serena](https://github.com/oraios/serena)** MCP instances per project, from a side panel instead of hand-editing the profile.
+Give the agent in DSH **semantic code navigation**: start Serena (LSP over MCP) per project and let it resolve definitions, find references and read symbol bodies instead of grepping the repo and reading whole files.
 
 English · [简体中文](./README.md)
 
 ![Serena panel, light theme](artifacts/ui-light.png)
 
-## Why
+## What this plugin is for
 
-Serena gives an agent semantic code navigation (definitions, references, symbol bodies) over MCP. Wiring it into DSH by hand costs a profile edit and an app restart per project. This plugin keeps the Serena runtime, the per-project MCP servers and the project registry in one place:
+This is not "yet another Serena manager". The point is to **change how the agent reads code**:
 
-- **Installs Serena once** with `uv tool install -p 3.13 serena-agent` — never bundled, always the upstream package.
-- **Starts and stops one MCP server per project on demand.** Each instance is a separate MCP client fiber, so stopping a project kills its child process and unregisters its tools without touching the profile.
-- **Keeps one project active.** Every live instance adds its tool schema to the model's context (~1.1k tokens), so the panel is built around "one project at a time".
-- **Builds the symbol index** (`serena project index`) and shows whether `.serena/cache/<language>/document_symbols.pkl` exists and how fresh it is.
+- Without it, an agent reads code through `grep` plus whole-file reads: one call-site search scans the repo, one function costs a whole file, tokens go to irrelevant code, and rename-sized changes leak.
+- Serena exposes the LSP semantic layer over MCP: look up a symbol by name, ask who references it, fetch just the symbol body, edit by symbol. The unit becomes the symbol, not the file.
+- But Serena runs **one MCP server per project**. Wiring it into DSH by hand means a profile edit and an app restart per project — and every live instance adds its tool schema to the model context.
+
+So what this plugin delivers is **a semantic-navigation capability you can switch on and off**: it installs the runtime, starts and stops the per-project MCP server, builds the symbol index and exposes the tools to the agent — all from one side panel, with no profile edit and no restart. Managing Serena is the mechanism; the agent's navigation ability is the product.
+
+What it deliberately does **not** do: bundle Serena (always the upstream `serena-agent`), replace a language server, or run several projects at once (that doubles the tool schema in context).
+
+## What Serena is
+
+[Serena](https://github.com/oraios/serena) is a language-server-backed toolbox for semantic code retrieval and editing, served to agents as an MCP server. It does not generate code. Its core operations:
+
+| Capability | Typical call | Why it beats grep / whole-file reads |
+| --- | --- | --- |
+| Locate a definition | `find_symbol("OrderService.submit")` | One hit, no repo-wide scan |
+| Find references | `find_referencing_symbols(...)` | Know the blast radius before renaming |
+| File overview | `get_symbols_overview(path)` | See the skeleton, then read only what matters |
+| Symbol-level edit | `replace_symbol_body(...)` / `insert_after_symbol(...)` | Touch the target symbol only |
+| Pattern search | `search_for_pattern(...)` | Structured search that skips irrelevant files |
+
+In DSH these arrive as **three MCP tools** (Serena v2's `--agent-interface repl` mode):
+
+- `initial_instructions` — the project's usage notes (~2.3k tokens; read once)
+- `activate_project` — switch to a project
+- `serena_repl` — run a Python snippet that calls every semantic API above (symbol/reference search, file overviews, editing, refactoring, inspections)
+
+The cost is real too: each running instance adds ~1.1k tokens of tool schema to context, which is why the panel is built around **one project at a time**.
 
 ## Screenshots
 
@@ -27,23 +50,40 @@ Serena gives an agent semantic code navigation (definitions, references, symbol 
 
 The screenshots are rendered by `tests/ui-fixture.mjs` against the real DSH theme bundle, with a mocked HTTP backend and a mocked folder picker. They are a browser fixture, not a capture of the Electron app, and the demo projects are placeholders.
 
-## Requirements
+## Dependencies
 
-- DSH desktop app with plugin support (`dsh.profile.bundles` + client slots).
-- `uv` on `PATH` or at `~/.local/bin/uv` (override with `SERENA_MANAGER_UV`).
-- macOS or Linux. The panel registers a native folder picker through `window.__DSH_DIRECTORY_PICKER__`, which the desktop app provides; in a plain browser the panel explains that and disables the action.
-- Serena v2 (`serena-agent`). The plugin installs and verifies it; you do not need it beforehand.
+| Dependency | Version | Purpose | Install |
+| --- | --- | --- | --- |
+| DSH desktop app | a build with the plugin API (`dsh.profile.bundles` + client slots) | The host; the panel and the tool run inside it | Install from your DSH distribution |
+| Node.js | ≥ 20 | Plugin runtime (`engines`); skip if DSH ships its own node | `brew install node` or nvm |
+| pnpm | ≥ 8 | `dsh plugin` forwards its arguments to pnpm in the profile | `corepack enable` or `npm i -g pnpm` |
+| uv | ≥ 0.4 | Installs/uninstalls Serena | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Serena | 2.x (`serena-agent`) | The semantic navigation itself | Installed by this plugin; manual equivalent below |
+| Xcode / Swift toolchain | — | Swift projects only: indexing needs sourcekit-lsp | App Store, or `xcode-select --install` |
 
-## Install
+Manual Serena install (what the panel's **Install Serena** button does; lands in `~/.local/bin/serena`):
 
-The plugin is consumed as a linked local bundle, so the checkout can stay wherever you cloned it:
+```bash
+uv tool install -p 3.13 serena-agent
+serena --version          # expect Serena 2.1.0 or newer
+```
+
+If `uv` is neither at `~/.local/bin/uv` nor on `PATH`, point the plugin at it:
+
+```bash
+export SERENA_MANAGER_UV=/opt/homebrew/bin/uv
+```
+
+## Install the plugin (by hand)
+
+Clone anywhere and register it as a linked package:
 
 ```bash
 git clone https://github.com/PetterWong-L/serena-manager.git
 cd serena-manager
 ```
 
-Register the package in your DSH profile (`~/.dsh/profiles/<profile>/package.json`): it goes in `dependencies` as a link, and its name goes in the bundle list so the profile actually loads it.
+Register it in your DSH profile (`~/.dsh/profiles/<profile>/package.json`) in two places: the link goes in `dependencies`, the name goes in `dsh.profile.bundles` (a dependency alone is not loaded).
 
 ```json
 {
@@ -64,7 +104,7 @@ Install it into the profile:
 dsh plugin --profile desktop install
 ```
 
-`cordis.patch.yml` is the bundle patch the profile applies — it deliberately contains no machine-specific paths. If the profile needs a custom location for the registry and logs, add a config block:
+Restart DSH (or let HMR pick it up) and **Serena 实例 / Serena Instances** appears in the side panel. If the CLI reports `profile "desktop" is managed exclusively by the Electron application`, the desktop app owns that profile: run `pnpm install` inside the profile directory (`dsh plugin` only forwards its arguments to that pnpm), or install through the app's own plugin settings. The bundle patch lives in `cordis.patch.yml` and carries no machine-specific paths; override the registry/log location in the profile's patch layer:
 
 ```yaml
 - insert:
@@ -74,12 +114,71 @@ dsh plugin --profile desktop install
         storageDir: /some/other/place/serena-manager
 ```
 
-Then restart DSH, or let HMR pick the plugin up, and open the **Serena 实例 / Serena Instances** entry in the side panel.
+## Install instructions for an AI agent
+
+Hand the block below to an agent (Codex, Claude Code, a DSH agent — any of them) that can run commands on the machine. It checks prerequisites, installs, then verifies instead of trusting exit codes.
+
+```text
+Install and verify the DSH plugin serena-manager on this machine, which already has the DSH desktop app.
+Repository: https://github.com/PetterWong-L/serena-manager
+
+Work in order, report the real output of each step, and stop to explain if something fails. Do not guess.
+
+1. Prerequisites (install what is missing)
+   - node -v (>= 20), pnpm -v (>= 8; `corepack enable` if missing)
+   - uv --version or ls ~/.local/bin/uv (else: curl -LsSf https://astral.sh/uv/install.sh | sh)
+   - dsh --version (must be a build with the plugin API)
+
+2. Clone to a stable location, e.g. ~/dsh/serena-manager
+   git clone https://github.com/PetterWong-L/serena-manager.git ~/dsh/serena-manager
+
+3. Edit the DSH profile package.json (back it up first; only add, keep JSON valid)
+   File: ~/.dsh/profiles/<profile>/package.json
+   - add to dependencies: "@local/serena-manager": "link:<absolute clone path>"
+   - append "@local/serena-manager" to dsh.profile.bundles
+   The link: value must be an absolute path. Do not touch other plugin entries.
+
+4. Install into the profile
+   dsh plugin --profile <profile> install
+
+5. Verify — do not stop at exit codes
+   - read the profile manifest back, both registrations must be there:
+     node -e "const p=require(process.env.HOME+'/.dsh/profiles/<profile>/package.json');
+       console.log(p.dependencies['@local/serena-manager'],
+                   p.dsh.profile.bundles.includes('@local/serena-manager'))"
+     expected: a link: absolute path and true
+   - restart DSH (or wait for HMR); the side panel must show "Serena 实例"
+   - open the panel -> runtime card -> Install Serena; wait for "installed" with version 2.x
+   - add a real project directory -> Start; the panel must show running with 3 tools
+   - build the index, then confirm <project>/.serena/cache/swift/document_symbols.pkl exists
+
+6. Report back
+   - a screenshot of the panel
+   - the snapshot from serena_manager status (installed, version, projects)
+   - the failing step and the raw error text, if any
+
+Constraints: never write or commit tokens or API keys; do not delete other plugins'
+configuration; do not patch plugin source to get past a check; always use absolute paths.
+```
+
+When it finishes you should see `serena_manager` plus `mcp__serena-<project>__serena_repl` in the agent's tool list.
+
+### Common failure modes
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `dsh plugin` says `managed exclusively by the Electron application` | The desktop app owns that profile | Run `pnpm install` in the profile directory, or use the app's plugin settings |
+| `dsh plugin` cannot find pnpm | pnpm not on `PATH` | `corepack enable` or `npm i -g pnpm` |
+| Panel stays "not installed" | `uv` is somewhere unexpected | Set `SERENA_MANAGER_UV` to its absolute path and retry |
+| Panel never appears | bundle missing from `dsh.profile.bundles` | Add it, rerun `dsh plugin install`, restart |
+| Folder button is disabled | The panel is open in a browser, not the desktop app | Open it in the desktop app |
+| Starts fine but 0 tools | MCP handshake failed | Check `~/.dsh/serena-manager/load.log`; reproduce with `serena start-mcp-server --project <path>` |
+| Indexing fails | Missing language server | Swift needs Xcode/sourcekit-lsp; install the LSP for other languages |
 
 ## Use
 
 1. **Install Serena** — the runtime card runs the install, streams the output and verifies the binary afterwards. Uninstall removes the tool but keeps your project indexes.
-2. **Add a project** — *选择仓库文件夹…* opens the native picker; the folder is registered by path and slug (the slug becomes the MCP server name `serena-<id>`).
+2. **Add a project** — *选择仓库文件夹…* opens the native picker; the folder is registered by path and its slug becomes the MCP server name `serena-<id>`.
 3. **Start** — starts the MCP server for that project only. *Index* builds the symbol cache with Swift as the default language; *Stop* disposes the fiber and the child process.
 4. **Stop all** — the panic button when you want the tool schema out of the context.
 
@@ -98,8 +197,8 @@ DSH profile
     └── Tool         serena_manager
 ```
 
-- **One fiber per project.** `ctx.plugin({ inject, apply }, config)` registers the upstream `@deepseek-ai/dsh-mcp-client` for that server; disposing the fiber disposes the stdio transport, which stops the child and unregisters the tools. No profile edit, no app restart.
-- **Module resolution.** The mcp-client is imported with `ctx.loader.import`, with a `.asar`/profile path scan as a fallback, so the plugin works from a linked checkout or from inside the packaged app.
+- **One fiber per project.** `ctx.plugin({ inject, apply }, config)` registers the upstream `@deepseek-ai/dsh-mcp-client` for that server; disposing the fiber disposes the stdio transport, which stops the child and unregisters the tools.
+- **Module resolution.** The mcp-client is imported with `ctx.loader.import`, with a `.asar`/profile path scan as a fallback, so it works from a linked checkout and from inside the packaged app.
 - **Index detection.** An index is "present" when `<repo>/.serena/cache/<language>/document_symbols.pkl` exists; its mtime is shown as freshness. Nothing is inferred from a running server.
 - **Progress.** Install/uninstall are serialized and report real phases (`preparing → installing → verifying → complete`, or `stopping → uninstalling → verifying`). No fabricated percentages; the log tail is capped at 16,000 characters.
 - **Stop order.** stdin EOF, then `SIGTERM`, then `SIGKILL`. Ports in use: dashboard 24282+, Serena tray manager 24224, `start-project-server` 24225.
