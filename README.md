@@ -1,49 +1,49 @@
 # serena-manager
 
-A DSH plugin that installs, runs and supervises **[Serena](https://github.com/oraios/serena)** MCP instances per project, from a side panel instead of hand-editing the profile.
+一个 DSH 插件：按项目管理 **[Serena](https://github.com/oraios/serena)** MCP 实例的安装、启动与停止，不用手改 profile。
 
-English · [简体中文](./README.zh-CN.md)
+简体中文 · [English](./README.en.md)
 
-![Serena panel, light theme](artifacts/ui-light.png)
+![Serena 面板，浅色主题](artifacts/ui-light.png)
 
-## Why
+## 解决什么问题
 
-Serena gives an agent semantic code navigation (definitions, references, symbol bodies) over MCP. Wiring it into DSH by hand costs a profile edit and an app restart per project. This plugin keeps the Serena runtime, the per-project MCP servers and the project registry in one place:
+Serena 通过 MCP 给 agent 提供语义代码导航（定义、引用、符号体）。手工接进 DSH，意味着每个项目都要改一次 profile、重启一次应用。这个插件把 Serena 运行时、按项目的 MCP server 和项目清单放在一处：
 
-- **Installs Serena once** with `uv tool install -p 3.13 serena-agent` — never bundled, always the upstream package.
-- **Starts and stops one MCP server per project on demand.** Each instance is a separate MCP client fiber, so stopping a project kills its child process and unregisters its tools without touching the profile.
-- **Keeps one project active.** Every live instance adds its tool schema to the model's context (~1.1k tokens), so the panel is built around "one project at a time".
-- **Builds the symbol index** (`serena project index`) and shows whether `.serena/cache/<language>/document_symbols.pkl` exists and how fresh it is.
+- **只装一次 Serena**：走 `uv tool install -p 3.13 serena-agent`，不打包二进制，始终用上游包。
+- **按需启停**：每个项目一个 MCP client fiber，停掉项目即杀掉子进程并注销工具，不改 profile、不重启应用。
+- **同一时间只留一个项目**：每个活着的实例都会把工具 schema 塞进上下文（约 1.1k tokens），所以面板围绕"一次一个项目"设计。
+- **建索引**：跑 `serena project index`，并展示 `.serena/cache/<language>/document_symbols.pkl` 是否存在、多新。
 
-## Screenshots
+## 截图
 
-| Light | Dark |
+| 浅色 | 深色 |
 | --- | --- |
-| ![Light](artifacts/ui-light.png) | ![Dark](artifacts/ui-dark.png) |
+| ![浅色](artifacts/ui-light.png) | ![深色](artifacts/ui-dark.png) |
 
-| Install in progress | Narrow panel (320 px) |
+| 安装进行中 | 窄面板（320 px） |
 | --- | --- |
-| ![Installing](artifacts/ui-installing.png) | ![Narrow](artifacts/ui-narrow.png) |
+| ![安装中](artifacts/ui-installing.png) | ![窄屏](artifacts/ui-narrow.png) |
 
-The screenshots are rendered by `tests/ui-fixture.mjs` against the real DSH theme bundle, with a mocked HTTP backend and a mocked folder picker. They are a browser fixture, not a capture of the Electron app, and the demo projects are placeholders.
+截图由 `tests/ui-fixture.mjs` 渲染：真实 DSH 主题包 + 模拟 HTTP 后端 + 模拟文件夹选择器。它是浏览器 fixture，不是 Electron 应用实拍；演示项目都是占位名。
 
-## Requirements
+## 前置条件
 
-- DSH desktop app with plugin support (`dsh.profile.bundles` + client slots).
-- `uv` on `PATH` or at `~/.local/bin/uv` (override with `SERENA_MANAGER_UV`).
-- macOS or Linux. The panel registers a native folder picker through `window.__DSH_DIRECTORY_PICKER__`, which the desktop app provides; in a plain browser the panel explains that and disables the action.
-- Serena v2 (`serena-agent`). The plugin installs and verifies it; you do not need it beforehand.
+- 支持插件的 DSH 桌面应用（`dsh.profile.bundles` + client slot）。
+- `uv` 在 `PATH` 或 `~/.local/bin/uv`（可用 `SERENA_MANAGER_UV` 覆盖）。
+- macOS 或 Linux。面板通过 `window.__DSH_DIRECTORY_PICKER__` 调原生文件夹选择器，这是桌面应用提供的；普通浏览器里面板会说明原因并禁用该操作。
+- Serena v2（`serena-agent`）。由插件安装并校验，不需要预先装好。
 
-## Install
+## 安装
 
-The plugin is consumed as a linked local bundle, so the checkout can stay wherever you cloned it:
+插件以本地链接包的方式接入，仓库可以放在任意位置：
 
 ```bash
 git clone https://github.com/PetterWong-L/serena-manager.git
 cd serena-manager
 ```
 
-Register the package in your DSH profile (`~/.dsh/profiles/<profile>/package.json`): it goes in `dependencies` as a link, and its name goes in the bundle list so the profile actually loads it.
+在 DSH profile（`~/.dsh/profiles/<profile>/package.json`）里登记：`dependencies` 里加链接，同时把包名加进 bundle 列表，profile 才会真正加载它。
 
 ```json
 {
@@ -58,13 +58,13 @@ Register the package in your DSH profile (`~/.dsh/profiles/<profile>/package.jso
 }
 ```
 
-Install it into the profile:
+装进 profile：
 
 ```bash
 dsh plugin --profile desktop install
 ```
 
-`cordis.patch.yml` is the bundle patch the profile applies — it deliberately contains no machine-specific paths. If the profile needs a custom location for the registry and logs, add a config block:
+`cordis.patch.yml` 是这个 bundle 的 patch，故意不含任何机器相关路径。需要改注册表和日志的位置时，在 profile 的 patch 层里加 config：
 
 ```yaml
 - insert:
@@ -74,58 +74,58 @@ dsh plugin --profile desktop install
         storageDir: /some/other/place/serena-manager
 ```
 
-Then restart DSH, or let HMR pick the plugin up, and open the **Serena 实例 / Serena Instances** entry in the side panel.
+然后重启 DSH（或等 HMR 接上），在侧边栏打开 **Serena 实例**。
 
-## Use
+## 使用
 
-1. **Install Serena** — the runtime card runs the install, streams the output and verifies the binary afterwards. Uninstall removes the tool but keeps your project indexes.
-2. **Add a project** — *选择仓库文件夹…* opens the native picker; the folder is registered by path and slug (the slug becomes the MCP server name `serena-<id>`).
-3. **Start** — starts the MCP server for that project only. *Index* builds the symbol cache with Swift as the default language; *Stop* disposes the fiber and the child process.
-4. **Stop all** — the panic button when you want the tool schema out of the context.
+1. **安装 Serena**：运行时卡片执行安装、流式输出日志、并在结束后校验二进制。卸载会移除工具，但保留项目索引。
+2. **添加项目**：*选择仓库文件夹…* 打开原生选择器，按路径登记；slug 会成为 MCP server 名 `serena-<id>`。
+3. **启动**：只启动该项目的 MCP server。*建索引* 默认按 Swift 生成符号缓存；*停止* 释放 fiber 和子进程。
+4. **全部停止**：想把工具 schema 从上下文里清掉时的兜底按钮。
 
-The same operations are available to the agent through the `serena_manager` tool: `status`, `install`, `uninstall`, `add`, `remove`, `start`, `stop`, `stop-all`, `index`. `status` is the only concurrency-safe action; everything else mutates which tools the profile exposes.
+同样的能力也通过 `serena_manager` 工具给 agent：`status`、`install`、`uninstall`、`add`、`remove`、`start`、`stop`、`stop-all`、`index`。只有 `status` 是并发安全的，其余动作都会改变 profile 暴露的工具集合。
 
-## How it works
+## 实现要点
 
 ```
 DSH profile
-└── serena-manager (host plugin, index.js)
-    ├── Store        ~/.dsh/serena-manager/state.json  (projects, autoStart)
-    ├── Instances    one mcp-client fiber per running project
-    │                 └── child: serena start-mcp-server --context codex --project <path>
+└── serena-manager（宿主插件，index.js）
+    ├── Store        ~/.dsh/serena-manager/state.json（项目、autoStart）
+    ├── Instances    每个运行中的项目一个 mcp-client fiber
+    │                 └── 子进程：serena start-mcp-server --context codex --project <path>
     ├── Routes       GET  /serena-manager/snapshot
     │                POST /serena-manager/manage
     └── Tool         serena_manager
 ```
 
-- **One fiber per project.** `ctx.plugin({ inject, apply }, config)` registers the upstream `@deepseek-ai/dsh-mcp-client` for that server; disposing the fiber disposes the stdio transport, which stops the child and unregisters the tools. No profile edit, no app restart.
-- **Module resolution.** The mcp-client is imported with `ctx.loader.import`, with a `.asar`/profile path scan as a fallback, so the plugin works from a linked checkout or from inside the packaged app.
-- **Index detection.** An index is "present" when `<repo>/.serena/cache/<language>/document_symbols.pkl` exists; its mtime is shown as freshness. Nothing is inferred from a running server.
-- **Progress.** Install/uninstall are serialized and report real phases (`preparing → installing → verifying → complete`, or `stopping → uninstalling → verifying`). No fabricated percentages; the log tail is capped at 16,000 characters.
-- **Stop order.** stdin EOF, then `SIGTERM`, then `SIGKILL`. Ports in use: dashboard 24282+, Serena tray manager 24224, `start-project-server` 24225.
+- **一项目一 fiber**：`ctx.plugin({ inject, apply }, config)` 为该 server 注册上游 `@deepseek-ai/dsh-mcp-client`；dispose fiber 即 dispose stdio transport，子进程退出、工具注销。
+- **模块解析**：用 `ctx.loader.import` 引入 mcp-client，附带 `.asar`／profile 路径扫描兜底，所以在链接的 checkout 和打包应用内都能工作。
+- **索引判定**：`<repo>/.serena/cache/<language>/document_symbols.pkl` 存在即"已建索引"，mtime 作为新鲜度；不从运行中的 server 猜。
+- **进度**：安装/卸载串行执行，报真实阶段（`preparing → installing → verifying → complete`，或 `stopping → uninstalling → verifying`），不编造百分比，日志尾巴上限 16,000 字符。
+- **停止顺序**：stdin EOF → `SIGTERM` → `SIGKILL`。涉及的端口：dashboard 24282+、Serena tray manager 24224、`start-project-server` 24225。
 
-### Configuration
+### 配置
 
-| Setting | Default | Notes |
+| 项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `storageDir` | `~/.dsh/serena-manager` | Holds `state.json` and `load.log`. |
-| `SERENA_MANAGER_UV` | `~/.local/bin/uv` | Absolute path to `uv`; `PATH` and Homebrew locations are also probed. |
-| `serenaHome` | `<storageDir>/home` | Passed to the child as `SERENA_HOME`. |
+| `storageDir` | `~/.dsh/serena-manager` | 存放 `state.json` 和 `load.log`。 |
+| `SERENA_MANAGER_UV` | `~/.local/bin/uv` | `uv` 的绝对路径；也会探测 `PATH` 和 Homebrew 位置。 |
+| `serenaHome` | `<storageDir>/home` | 作为 `SERENA_HOME` 传给子进程。 |
 
-### Security
+### 安全
 
-Both routes sit behind the DSH connection owner check: only the owner browser peer is admitted, a foreign `Origin` or `Sec-Fetch-Site: cross-site` is rejected, request bodies must be JSON and are capped at 64 KiB, and responses are JSON with `nosniff`. Mutations are an allowlist of actions, and every command is spawned with an argv array — no shell, no string interpolation. Paths are resolved to absolute, real paths and must be existing directories. No credentials or tokens are stored or logged; the plugin never sees your API keys.
+两条路由都在 DSH 连接属主校验之后：只接受属主浏览器 peer，陌生 `Origin` 或 `Sec-Fetch-Site: cross-site` 直接拒绝，请求体必须是 JSON 且不超过 64 KiB，响应是 JSON 并带 `nosniff`。变更动作是白名单，命令一律用 argv 数组启动——不走 shell、不做字符串拼接。路径会被解析成绝对真实路径，且必须是已存在的目录。插件不存储、不记录任何凭据或 token，也看不到你的 API key。
 
-## Testing
+## 测试
 
 ```bash
-npm test          # host smoke (mocked cordis context) + panel contract
-npm run test:vm   # 12 mocked backend scenarios; needs node --experimental-vm-modules
+npm test          # 宿主冒烟（模拟 cordis 上下文）+ 面板契约
+npm run test:vm   # 12 个模拟后端场景，需要 node --experimental-vm-modules
 ```
 
-The VM suite mocks `child_process`, the filesystem and the clock, so it exercises the install/uninstall state machine, the HTTP guards and the progress reporting without installing anything or spawning Serena.
+VM 套件把 `child_process`、文件系统、时钟都做成了 mock，所以能在不安装任何东西、不启动 Serena 的前提下跑安装/卸载状态机、HTTP 守卫和进度上报。
 
-The UI fixture needs a browser and the DSH theme bundle, so its inputs are environment variables:
+UI fixture 需要浏览器和 DSH 主题包，因此输入走环境变量：
 
 ```bash
 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs \
@@ -135,16 +135,16 @@ CHROME_PATH='/Applications/.../Microsoft Edge' \
 npm run test:ui
 ```
 
-Without those variables the fixture prints `SKIP` and exits 0. With them it renders the panel in light/dark, checks the native picker contract, drags the viewport down to 320 px and regenerates `artifacts/`.
+不给这些变量时 fixture 打印 `SKIP` 并退出 0；给了就渲染浅色/深色、检查原生选择器契约、把视口压到 320 px，并重新生成 `artifacts/`。
 
-## Limitations
+## 已知限制
 
-- One active instance per project is supported; running several at once multiplies the tool schema in context.
-- The panel is the only place with the native folder picker; the agent tool takes a path directly.
-- `state.json` is per machine and not synced. Stopping a project persists `enabled: false`, so it will not autostart next launch.
-- macOS and Linux only; Windows paths and process semantics are untested.
-- A failed MCP handshake can still leave `running: true` with zero tools, because the mcp-client fiber is created without `failOnStartupError`.
+- 每个项目同时只支持一个活动实例；开多个会让工具 schema 在上下文里翻倍。
+- 原生文件夹选择器只在面板里；agent 工具直接收路径。
+- `state.json` 是单机状态、不同步。停止项目会持久化 `enabled: false`，下次启动不会自启。
+- 仅支持 macOS 与 Linux；Windows 的路径和进程语义未验证。
+- MCP 握手失败时可能仍显示 `running: true` 但工具为 0，因为创建 mcp-client fiber 时没有设 `failOnStartupError`。
 
-## License
+## 许可证
 
-MIT — see [LICENSE](./LICENSE).
+MIT，见 [LICENSE](./LICENSE)。
