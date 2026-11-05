@@ -143,9 +143,13 @@ Work in order, report the real output of each step, and stop to explain if somet
 
 5. Verify — do not stop at exit codes
    - read the profile manifest back, both registrations must be there:
-     node -e "const p=require(process.env.HOME+'/.dsh/profiles/<profile>/package.json');
-       console.log(p.dependencies['@local/serena-manager'],
-                   p.dsh.profile.bundles.includes('@local/serena-manager'))"
+     node -e '
+       const p = require(process.env.HOME + "/.dsh/profiles/<profile>/package.json");
+       console.log(
+         p.dependencies["@local/serena-manager"],
+         p.dsh.profile.bundles.includes("@local/serena-manager"),
+       );
+     '
      expected: a link: absolute path and true
    - restart DSH (or wait for HMR); the side panel must show "Serena 实例"
    - open the panel -> runtime card -> Install Serena; wait for "installed" with version 2.x

@@ -143,9 +143,13 @@ dsh plugin --profile desktop install
 
 5. 验收（不要只看命令退出码）
    - 读回 profile manifest，确认两处都登记上了：
-     node -e "const p=require(process.env.HOME+'/.dsh/profiles/<profile>/package.json');
-       console.log(p.dependencies['@local/serena-manager'],
-                   p.dsh.profile.bundles.includes('@local/serena-manager'))"
+     node -e '
+       const p = require(process.env.HOME + "/.dsh/profiles/<profile>/package.json");
+       console.log(
+         p.dependencies["@local/serena-manager"],
+         p.dsh.profile.bundles.includes("@local/serena-manager"),
+       );
+     '
      期望输出：一个 link: 绝对路径 和 true
    - 重启 DSH（或等 HMR），侧边栏应出现「Serena 实例」
    - 打开面板 → 运行环境卡片 → 安装 Serena，等到状态变成「已安装」并显示版本（2.x）
