@@ -208,6 +208,8 @@ dsh plugin --profile desktop install
 | 文件夹按钮灰的 | 在浏览器里打开，不是桌面应用 | 用桌面应用打开同一面板 |
 | 启动成功但工具数 0 | MCP 握手失败 | 看 `~/.dsh/serena-manager/load.log`，手动跑 `serena start-mcp-server --project <path>` 复现 |
 | 建索引失败 | 缺语言服务器 | Swift 需 Xcode/sourcekit-lsp；其他语言装对应 LSP |
+| 提示 `Serena reported success but the index cache is missing` | `.serena/project.yml` 里 `language_servers: []`（Serena 自动生成后后台线程被打断，文件停在空列表），`project index` 会跳过所有文件却以 0 退出 | 面板点一次*建索引*即可自动写回 `language_servers: [swift]`；也可手工改成你需要的语言，或删掉该文件让 Serena 重新生成 |
+| 项目卡片显示“缺少语言服务” | 同上，尚未修复 | 同上 |
 
 ## 使用
 
@@ -235,6 +237,7 @@ DSH profile
 - **一项目一 fiber**：`ctx.plugin({ inject, apply }, config)` 为该 server 注册上游 `@deepseek-ai/dsh-mcp-client`；dispose fiber 即 dispose stdio transport，子进程退出、工具注销。
 - **模块解析**：用 `ctx.loader.import` 引入 mcp-client，附带 `.asar`／profile 路径扫描兜底，链接 checkout 与打包应用内都能工作。
 - **索引判定**：`<repo>/.serena/cache/<language>/document_symbols.pkl` 存在即"已建索引"，mtime 作为新鲜度；不从运行中的 server 猜。
+- **语言自愈**：Serena 的 `--ls` 只在*生成* `project.yml` 时生效，已存在但 `language_servers` 为空时建索引会静默跳过所有文件。插件在启动实例与建索引前把空列表改写为 `languages` 配置值（只改这一行，其余手改设置保留），索引仍为空时给出具体原因。
 - **进度**：安装、卸载、建索引与更新索引共用进度机制。索引执行 `preparing → stopping（原先运行时）→ indexing → verifying → restarting（原先运行时）→ complete`；失败提供诊断与重试。项目启停、移除等变更共用队列，避免与缓存写入冲突。不编造百分比，日志尾巴上限 16,000 字符。
 - **停止顺序**：stdin EOF → `SIGTERM` → `SIGKILL`。涉及端口：dashboard 24282+、Serena tray manager 24224、`start-project-server` 24225。
 
@@ -245,6 +248,7 @@ DSH profile
 | `storageDir` | `~/.dsh/serena-manager` | 存放 `state.json` 和 `load.log`。 |
 | `SERENA_MANAGER_UV` | `~/.local/bin/uv` | `uv` 的绝对路径；也会探测 `PATH` 与 Homebrew 位置。 |
 | `serenaHome` | `<storageDir>/home` | 作为 `SERENA_HOME` 传给子进程。 |
+| `languages` | `["swift"]` | 建索引与修复 `.serena/project.yml` 使用的语言服务，需与 Serena 的 language server 名一致（如 `python`、`typescript`）。 |
 
 ### 安全
 

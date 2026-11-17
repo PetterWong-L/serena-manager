@@ -273,4 +273,43 @@ for (const stopBeforeRetry of [false, true]) {
   finished((await h.status()).runtimeOperation, 'failed');
   passed++;
 }
+// An empty language_servers list is repaired before indexing: Serena ignores
+// --ls for an existing project.yml, so the file itself must be fixed or the
+// command indexes nothing and still exits 0.
+{
+  const h = await harness({ installed: true });
+  await h.act('add', { path: h.projectPath });
+  const config = path.join(h.projectPath, '.serena/project.yml');
+  await fsp.mkdir(path.dirname(config), { recursive: true });
+  await fsp.writeFile(config, '# hand-maintained\nproject_name: "project"\nlanguage_servers: []\nignored_paths: []\n');
+  const pending = h.act('index', { id: 'project' });
+  const child = await nextChild(h, 'index');
+  // vm-context arrays have a foreign prototype, so compare as strings.
+  assert.equal(child.args.slice(0, 2).join(' '), 'project index');
+  assert.equal(child.args.slice(-2).join(' '), '--ls swift', 'configured languages drive --ls');
+  child.emitOutput('Indexed files per language: \n');
+  child.finish();
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.match(result.diagnostic, /cache is missing.*no language servers/);
+  const repaired = await fsp.readFile(config, 'utf8');
+  assert.match(repaired, /language_servers: \[swift\]/);
+  assert.match(repaired, /# hand-maintained/);
+  assert.match(repaired, /ignored_paths: \[\]/);
+  assert.equal((await h.status()).projects[0].languages.join(','), 'swift');
+  passed++;
+}
+// Starting a server repairs the file first, so a session never opens with zero
+// language servers (such a server exposes no LSP at all).
+{
+  const h = await harness({ installed: true });
+  await h.act('add', { path: h.projectPath });
+  const config = path.join(h.projectPath, '.serena/project.yml');
+  await fsp.mkdir(path.dirname(config), { recursive: true });
+  await fsp.writeFile(config, 'language_servers: []\n');
+  const result = await h.act('start', { id: 'project' });
+  assert.equal(result.enabled, true);
+  assert.match(await fsp.readFile(config, 'utf8'), /language_servers: \[swift\]/);
+  passed++;
+}
 console.log(`PASS ${passed} mocked backend scenarios; no real subprocess spawned. Artifacts: ${root}`);

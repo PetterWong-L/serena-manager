@@ -208,6 +208,8 @@ When it finishes you should see `serena_manager` plus `mcp__serena-<project>__se
 | Folder button is disabled | The panel is open in a browser, not the desktop app | Open it in the desktop app |
 | Starts fine but 0 tools | MCP handshake failed | Check `~/.dsh/serena-manager/load.log`; reproduce with `serena start-mcp-server --project <path>` |
 | Indexing fails | Missing language server | Swift needs Xcode/sourcekit-lsp; install the LSP for other languages |
+| `Serena reported success but the index cache is missing` | `.serena/project.yml` says `language_servers: []` (Serena auto-creates it empty and fills it from a background thread; stopping the server first freezes it), so `project index` skips every file and still exits 0 | Click *Build index* once — the plugin writes `language_servers: [swift]` back; or set the languages by hand, or delete the file so Serena regenerates it |
+| Project card says "No language servers" | Same cause, not repaired yet | Same fix |
 
 ## Use
 
@@ -235,6 +237,7 @@ DSH profile
 - **One fiber per project.** `ctx.plugin({ inject, apply }, config)` registers the upstream `@deepseek-ai/dsh-mcp-client` for that server; disposing the fiber disposes the stdio transport, which stops the child and unregisters the tools.
 - **Module resolution.** The mcp-client is imported with `ctx.loader.import`, with a `.asar`/profile path scan as a fallback, so it works from a linked checkout and from inside the packaged app.
 - **Index detection.** An index is "present" when `<repo>/.serena/cache/<language>/document_symbols.pkl` exists; its mtime is shown as freshness. Nothing is inferred from a running server.
+- **Language self-repair.** Serena honours `--ls` only while *creating* `project.yml`; an existing file with an empty `language_servers` list makes indexing skip every file without failing. The plugin rewrites that one line to the `languages` setting before starting an instance and before indexing (all other hand-edited settings are kept), and explains an empty index instead of just reporting it.
 - **Progress.** Install, uninstall, initial indexing and index updates share progress reporting. Indexing runs `preparing → stopping (if running) → indexing → verifying → restarting (if previously running) → complete`, with diagnostics and retry on failure. Project start, stop and removal share the queue to avoid concurrent cache access. No fabricated percentages; the log tail is capped at 16,000 characters.
 - **Stop order.** stdin EOF, then `SIGTERM`, then `SIGKILL`. Ports in use: dashboard 24282+, Serena tray manager 24224, `start-project-server` 24225.
 
@@ -245,6 +248,7 @@ DSH profile
 | `storageDir` | `~/.dsh/serena-manager` | Holds `state.json` and `load.log`. |
 | `SERENA_MANAGER_UV` | `~/.local/bin/uv` | Absolute path to `uv`; `PATH` and Homebrew locations are also probed. |
 | `serenaHome` | `<storageDir>/home` | Passed to the child as `SERENA_HOME`. |
+| `languages` | `["swift"]` | Language servers used for indexing and for repairing `.serena/project.yml`; names must match Serena's (e.g. `python`, `typescript`). |
 
 ### Security
 

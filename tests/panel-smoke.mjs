@@ -72,6 +72,7 @@ panelSnapshot = {
   projects: [
     { id: 'live', name: 'Live project', path: '/live', indexed: true, indexedAt, running: true },
     { id: 'new', name: 'New project', path: '/new', indexed: false, running: false },
+    { id: 'broken', name: 'Broken project', path: '/broken', indexed: false, running: false, languages: [] },
   ],
   totals: { projects: 2, indexed: 1, running: 1, tools: 0 },
   serena: { bin: '/serena', installed: true }, observedAt: indexedAt,
@@ -85,4 +86,8 @@ assert.ok(tree.some(node => node.type === 'button' && node.children.includes('�
 assert.ok(tree.some(node => node.type === 'time' && node.props.dateTime === indexedAt), 'cache timestamp visible');
 assert.match(dicts.en.updateIndex, /Update index/);
 assert.match(dicts.zh.indexHint, /代码/);
+const noLanguages = tree.find(node => node.props?.['data-status'] === 'warn' && node.children?.includes('缺少语言服务'));
+assert.ok(noLanguages, 'a project without language servers is flagged, not silently "no index"');
+assert.match(noLanguages.props.title, /project\.yml/, 'the badge explains how the empty language list is repaired');
+assert.match(dicts.en.noLanguagesBadge, /No language servers/);
 console.log('PASS panel smoke');

@@ -11,7 +11,7 @@
  * - Serena itself is installed/uninstalled through `uv tool`, never bundled.
  */
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -21,6 +21,10 @@ export const name = 'serena-manager';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,24}$/;
 const SERVER_PREFIX = 'serena-';
+// Serena names its language servers after the LSP it drives. `swift` is the
+// default because every project this panel was built for is an iOS/Swift repo;
+// `config.languages` overrides it for other ecosystems.
+const DEFAULT_LANGUAGES = ['swift'];
 const DEFAULT_UV = process.env.SERENA_MANAGER_UV ?? join(homedir(), '.local', 'bin', 'uv');
 const VERSION_TTL_MS = 5 * 60 * 1000;
 const OUTPUT_TAIL_LIMIT = 16000;
@@ -152,6 +156,69 @@ async function serenaStatus(store, fresh = false) {
   };
 }
 
+function normaliseLanguages(value) {
+  const input = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  const languages = input.map(item => String(item).trim()).filter(Boolean);
+  return languages.length ? languages : [...DEFAULT_LANGUAGES];
+}
+
+const LANGUAGE_SERVERS_LINE_RE = /^language_servers\s*:/;
+
+function unquote(value) {
+  return value.trim().replace(/^['"]|['"]$/g, '');
+}
+
+/**
+ * Read `language_servers` from a project.yml without adding a YAML dependency.
+ * Returns null when the project file is absent, otherwise the declared list —
+ * which may be empty, because Serena's MCP server auto-generates project.yml
+ * with `language_servers: []` and fills the list in from a *background*
+ * thread; stopping the server before that thread saves leaves the file empty.
+ */
+function projectLanguages(dir) {
+  let raw;
+  try {
+    raw = readFileSync(join(dir, '.serena', 'project.yml'), 'utf8');
+  } catch {
+    return null;
+  }
+  const lines = raw.split('\n');
+  const at = lines.findIndex(line => LANGUAGE_SERVERS_LINE_RE.test(line));
+  if (at < 0) return [];
+  const inline = lines[at].slice(lines[at].indexOf(':') + 1).replace(/\s+#.*$/, '').trim();
+  if (inline) {
+    return inline.replace(/^\[|\]$/g, '').split(',').map(unquote).filter(value => value && !value.startsWith('#'));
+  }
+  const declared = [];
+  for (let index = at + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    const item = /^\s*-\s*(.+)$/.exec(line);
+    if (!item) break;
+    declared.push(unquote(item[1]));
+  }
+  return declared.filter(Boolean);
+}
+
+/**
+ * Write `language_servers` into an existing project.yml that declares none.
+ * Serena only honours `--ls` while *creating* the file, so an empty list keeps
+ * `project index` a silent no-op (exit 0, zero files, no cache) forever.
+ * Rewriting the single key keeps every other (hand-edited) setting intact.
+ */
+async function repairProjectLanguages(dir, languages) {
+  const declared = projectLanguages(dir);
+  if (declared === null || declared.length > 0) return { changed: false, languages: declared };
+  const file = join(dir, '.serena', 'project.yml');
+  const lines = (await readFile(file, 'utf8')).split('\n');
+  const at = lines.findIndex(line => LANGUAGE_SERVERS_LINE_RE.test(line));
+  const replacement = `language_servers: [${languages.join(', ')}]`;
+  if (at < 0) lines.push(replacement);
+  else lines[at] = replacement;
+  await writeFile(file, lines.join('\n'));
+  return { changed: true, languages: [...languages] };
+}
+
 async function projectFacts(dir) {
   const cache = join(dir, '.serena', 'cache');
   let indexed = false;
@@ -169,14 +236,38 @@ async function projectFacts(dir) {
     indexed,
     indexedAt: updatedAt ? updatedAt.toISOString() : null,
     hasProjectFile: existsSync(join(dir, '.serena', 'project.yml')),
+    languages: projectLanguages(dir),
   };
 }
 
+/**
+ * Explain a successful-but-empty index run, because Serena exits 0 whenever it
+ * skips every file (no language servers, nothing matching ignored_paths, or a
+ * cache write it could not perform).
+ */
+function missingCacheReason(project, facts, indexed, repairError, declaredBefore) {
+  const config = join(project.path, '.serena', 'project.yml');
+  const cache = join(project.path, '.serena', 'cache');
+  const languages = facts.languages ?? [];
+  if (!languages.length) {
+    const retry = repairError ? `; automatic repair failed: ${repairError}` : '';
+    return `${config} declares no language servers — set language_servers, or delete that file and index again${retry}`;
+  }
+  if (Array.isArray(declaredBefore) && declaredBefore.length === 0) {
+    return `${config} declared no language servers until this run repaired it to ${languages.join(', ')}; re-run the index`;
+  }
+  const counted = /Indexed files per language:\s*(.*)$/m.exec(`${indexed?.stdout ?? ''}${indexed?.stderr ?? ''}`);
+  const files = counted ? counted[1].trim() : '';
+  if (!files) return `Serena matched 0 files for ${languages.join(', ')} — check ignored_paths and that the language server is runnable`;
+  return `Serena indexed ${files} but wrote no symbols under ${cache} — check that directory is writable`;
+}
+
 class Instances {
-  constructor(ctx, store, logger) {
+  constructor(ctx, store, logger, languages = DEFAULT_LANGUAGES) {
     this.ctx = ctx;
     this.store = store;
     this.logger = logger;
+    this.languages = languages;
     this.live = new Map();
     this.pending = new Map();
     this.module = null;
@@ -234,6 +325,15 @@ class Instances {
     const bin = this.serenaBin(status);
     if (!bin) throw new Error('Serena is not installed');
     if (!existsSync(project.path)) throw new Error(`project path is missing: ${project.path}`);
+    // Serena auto-creates project.yml with an empty language list and fills it
+    // from a background thread. If the server dies first the file stays empty,
+    // and a server started from it exposes no LSP at all — repair before spawn.
+    try {
+      const repaired = await repairProjectLanguages(project.path, this.languages);
+      if (repaired.changed) this.logger.warn(`serena-manager: ${project.path} declared no language servers; set them to ${repaired.languages.join(', ')} in .serena/project.yml`);
+    } catch (error) {
+      this.logger.warn(`serena-manager: could not repair .serena/project.yml for ${project.id}: ${String(error?.message ?? error)}`);
+    }
     // Register the in-flight start before the first await so a second start or a
     // stop cannot race past the `live.has()` check.
     const task = (async () => {
@@ -306,7 +406,8 @@ export function apply(ctx, config = {}) {
   const storageDir = config.storageDir ?? join(homedir(), '.dsh', 'serena-manager');
   try { mkdirSync(storageDir, { recursive: true }); } catch { /* diagnostics only */ }
   const store = new Store(storageDir);
-  const instances = new Instances(ctx, store, ctx.logger);
+  const languages = normaliseLanguages(config.languages);
+  const instances = new Instances(ctx, store, ctx.logger, languages);
   const trace = message => {
     try {
       const file = join(storageDir, 'load.log');
@@ -360,6 +461,7 @@ export function apply(ctx, config = {}) {
         enabled: project.enabled !== false,
         indexed: facts.indexed,
         indexedAt: facts.indexedAt,
+        languages: facts.languages,
         running: Boolean(live),
         startedAt: live?.startedAt ?? null,
         error: live?.error ?? null,
@@ -440,24 +542,33 @@ export function apply(ctx, config = {}) {
       const wasRunning = instances.live.has(id);
       const shouldRestore = wasRunning || indexRestorePending.has(id);
       const diagnostics = [];
-      let indexed, facts;
+      let indexed, facts, repairError = null;
       if (wasRunning) {
         phase('stopping');
         await instances.stop(id, { strict: true });
         indexRestorePending.add(id);
       }
       try {
+        // The index command ignores --ls when project.yml already exists, so an
+        // empty language list must be repaired here or the command indexes
+        // nothing and still exits 0 ("Serena reported success…" forever).
+        const declaredBefore = projectLanguages(project.path);
+        try {
+          const repaired = await repairProjectLanguages(project.path, languages);
+          if (repaired.changed) append(`Set language_servers in .serena/project.yml to ${repaired.languages.join(', ')}\n`);
+        } catch (error) {
+          repairError = String(error?.message ?? error);
+        }
         phase('indexing');
         append(`Indexing ${project.name ?? id}…\n`);
         // Re-running the upstream index command refreshes the existing cache.
-        // --ls only applies when auto-creating project.yml for a new project.
-        indexed = await run(status.bin, ['project', 'index', project.path, '--ls', 'swift'], {
+        indexed = await run(status.bin, ['project', 'index', project.path, ...languages.flatMap(language => ['--ls', language])], {
           env: { SERENA_HOME: store.data.serenaHome }, timeoutMs: 900000, onOutput,
         });
         phase('verifying');
         facts = await projectFacts(project.path);
         if (!indexed.ok) diagnostics.push(`Serena index exited with ${indexed.code ?? 'an error'}: ${indexed.stderr.trim() || indexed.stdout.trim()}`);
-        else if (!facts.indexed) diagnostics.push('Serena reported success but the index cache is missing');
+        else if (!facts.indexed) diagnostics.push(`Serena reported success but the index cache is missing: ${missingCacheReason(project, facts, indexed, repairError, declaredBefore)}`);
       } catch (error) {
         diagnostics.push(String(error?.message ?? error));
       } finally {

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.1 — 2026-11-17
+
+### Fixed
+
+- 修复“Serena reported success but the index cache is missing”死锁般的提示：Serena 首次自动生成 `.serena/project.yml` 时先写入空的 `language_servers: []`，再在**后台线程**推断语言并回写；实例在该线程完成前被停止，文件就永久停在空列表，之后 `serena project index` 会跳过所有文件却仍以 0 退出。插件现在在启动实例和建索引前把空列表修复为配置的语言（默认 `swift`），因此面板可以自愈，不必手工编辑 YAML。
+- 建索引仍为空时给出可执行的原因：未声明语言服务（附修复结果）、匹配 0 个文件（检查 `ignored_paths` 与语言服务器）、或索引了文件但缓存不可写。
+- `--ls` 不再硬编码为 `swift`；非 Swift 项目也能正确建索引。
+
+### Added
+
+- 新增 `languages` 配置项（默认 `["swift"]`），指定建索引使用的语言服务。
+- 项目卡片对缺少语言服务的项目显示告警徽标与修复说明，不再只显示“未建索引”。
+
+### Verification and compatibility
+
+- host/panel 冒烟检查通过，mocked backend 场景从 18 增至 20（空 `language_servers` 的索引自愈、启动前修复），面板冒烟覆盖新徽标。
+- 用真实的 oog126 项目验证：修复 `.serena/project.yml` 后重新建索引得到 `document_symbols.pkl`。
+- 无新增依赖、无状态迁移；Node.js >= 20 的要求不变。
+
 ## 0.2.0 — 2026-11-05
 
 ### Added
